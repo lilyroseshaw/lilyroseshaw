@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Cookie Monster{% endblock %}
+{% block content %}
+
+<section class="hero small">
+  <h1>We found {{ counts.total }} possible company relationships</h1>
+  <p class="counts">
+    <span class="pill pending">Needs review: {{ counts.pending }}</span>
+    <span class="pill confirmed">Confirmed: {{ counts.confirmed }}</span>
+    <span class="pill rejected">Rejected: {{ counts.rejected }}</span>
+  </p>
+  {% if scanned is not none %}
+  <p class="scan-summary">Last scan: {{ scanned }} matching messages processed · {{ created }} new companies · {{ updated }} updated.</p>
+  {% endif %}
+</section>
+
+<div class="card toolbar">
+  <form method="get" action="/dashboard" class="filter-form">
+    <input type="text" name="q" placeholder="Search company or domain" value="{{ query }}">
+    <select name="status">
+      <option value="all" {% if status_filter == "all" %}selected{% endif %}>All</option>
+      <option value="pending" {% if status_filter == "pending" %}selected{% endif %}>Needs review</option>
+      <option value="confirmed" {% if status_filter == "confirmed" %}selected{% endif %}>Confirmed</option>
+      <option value="rejected" {% if status_filter == "rejected" %}selected{% endif %}>Rejected</option>
+    </select>
+    <button type="submit" class="btn btn-secondary">Filter</button>
+  </form>
+  <form method="post" action="/api/delete-all" onsubmit="return confirm('Delete ALL discovered company data from the local database? This cannot be undone. (Your Gmail connection is not affected.)');">
+    <button type="submit" class="btn btn-danger">Delete all imported data</button>
+  </form>
+</div>
+
+{% if not companies %}
+<div class="card muted">
+  <p>No companies match this filter yet. Go back to the home page and run a scan.</p>
+</div>
+{% endif %}
+
+<div class="company-list" id="merge-select-scope">
+{% for c in companies %}
+  <div class="company-card status-{{ c.status }}" data-id="{{ c.id }}">
+    <div class="company-head">
+      <div>
+        <h3>{{ c.name }}</h3>
+        <div class="domain">{{ c.domain }}</div>
+      </div>
+      <div class="badges">
+        <span class="pill confidence-{{ c.confidence }}">{{ c.confidence }} confidence</span>
+        <span class="pill rel-{{ c.relationship_type }}">{{ c.relationship_type }}</span>
+      </div>
+    </div>
+
+    <p class="evidence-line">
+      {{ c.evidence_count }} piece{{ 's' if c.evidence_count != 1 else '' }} of evidence
+      ({{ c.evidence_types | join(', ') }})
+    </p>
+    <p class="dates">First seen {{ c.first_seen.strftime('%Y-%m-%d') }} · Last seen {{ c.last_seen.strftime('%Y-%m-%d') }}</p>
+
+    <details>
+      <summary>Details</summary>
+      {% if c.example_subjects %}
+      <p><strong>Example subject lines:</strong></p>
+      <ul>{% for s in c.example_subjects %}<li>{{ s }}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if c.detection_reasons %}
+      <p><strong>Detected because:</strong></p>
+      <ul>{% for r in c.detection_reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+      {% endif %}
+
+      <form method="post" action="/api/companies/{{ c.id }}/correct" class="correct-form">
+        <label>Company name
+          <input type="text" name="name" value="{{ c.name }}">
+        </label>
+        <label>Relationship type
+          <select name="relationship_type">
+            {% for opt in ["transactional", "account", "subscription", "marketing", "mixed"] %}
+            <option value="{{ opt }}" {% if c.relationship_type == opt %}selected{% endif %}>{{ opt }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit" class="btn btn-secondary btn-small">Save correction</button>
+      </form>
+
+      <label class="merge-checkbox">
+        <input type="checkbox" class="merge-pick" value="{{ c.id }}"> select for merge
+      </label>
+    </details>
+
+    <div class="actions">
+      {% if c.status != "confirmed" %}
+      <form method="post" action="/api/companies/{{ c.id }}/confirm"><button type="submit" class="btn btn-confirm">Confirm</button></form>
+      {% endif %}
+      {% if c.status != "rejected" %}
+      <form method="post" action="/api/companies/{{ c.id }}/reject"><button type="submit" class="btn btn-reject">Reject</button></form>
+      {% endif %}
+      {% if c.status != "pending" %}
+      <form method="post" action="/api/companies/{{ c.id }}/reset"><button type="submit" class="btn btn-secondary btn-small">Reset</button></form>
+      {% endif %}
+    </div>
+  </div>
+{% endfor %}
+</div>
+
+<div class="card merge-bar">
+  <form method="post" action="/api/companies/merge" id="merge-form">
+    <p>To merge duplicates: check "select for merge" on exactly two companies above, then choose which one to keep.</p>
+    <input type="hidden" name="keep_id" id="merge-keep-id">
+    <input type="hidden" name="merge_id" id="merge-other-id">
+    <button type="submit" class="btn btn-secondary" id="merge-submit" disabled>Merge selected (keep first checked)</button>
+  </form>
+</div>
+
+<script src="/static/dashboard.js"></script>
+{% endblock %}

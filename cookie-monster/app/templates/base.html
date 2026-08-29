@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Cookie Monster{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="wordmark" href="/">🍪 Cookie Monster</a>
+    <span class="tagline">Find who has your data. Take it back.</span>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="footer">
+    <p>Local prototype. Runs on your machine only. Nothing is sent anywhere except Google's Gmail API and, later, the companies you choose to contact yourself.</p>
+  </footer>
+</body>
+</html>

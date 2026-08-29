@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Cookie Monster{% endblock %}
+{% block content %}
+
+<section class="hero">
+  <h1>Who has your data?</h1>
+  <p class="lede">
+    Cookie Monster scans your own Gmail history to rebuild the list of companies
+    you've actually given your information to — accounts, orders, subscriptions,
+    newsletters — so you can decide what to do about each one.
+  </p>
+</section>
+
+{% if not google_configured %}
+<div class="card warning">
+  <strong>Setup incomplete.</strong> No Google OAuth client is configured yet.
+  Copy <code>.env.example</code> to <code>.env</code> and fill in
+  <code>GOOGLE_CLIENT_ID</code> / <code>GOOGLE_CLIENT_SECRET</code>. See the README.
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Step 1 — Connect Gmail</h2>
+  <p>Before you connect, here's exactly what Cookie Monster is asking Google for:</p>
+  <ul class="permission-list">
+    <li><strong>Requested:</strong> {{ scope_explanation }}</li>
+    <li><strong>Not requested:</strong> sending email, deleting email, modifying/labeling email,
+      reading email bodies or attachments, access to Drive/Contacts/Calendar.</li>
+    <li><strong>Your Google password:</strong> never seen, never requested, never stored.
+      Google handles login entirely on its own site.</li>
+  </ul>
+
+  {% if connected_address %}
+    <p class="connected">✅ Connected as <strong>{{ connected_address }}</strong></p>
+    <form method="post" action="/auth/disconnect" onsubmit="return confirm('Disconnect Gmail and delete the stored token? This does not delete companies already discovered.');">
+      <button type="submit" class="btn btn-secondary">Disconnect Gmail</button>
+    </form>
+  {% elif google_configured %}
+    <a href="/auth/login" class="btn btn-primary">Connect Gmail with Google</a>
+  {% else %}
+    <button class="btn btn-primary" disabled title="Configure GOOGLE_CLIENT_ID/SECRET in .env first">Connect Gmail with Google</button>
+  {% endif %}
+</div>
+
+{% if connected_address %}
+<div class="card">
+  <h2>Step 2 — Scan your inbox</h2>
+  <p>
+    This searches for messages that look like account, order, subscription, or
+    marketing evidence (by subject line only), reads their headers, classifies
+    them, and stores an aggregate summary per company. Message bodies are never
+    fetched. You can re-run this any time to pick up new evidence.
+  </p>
+  <form method="post" action="/scan">
+    <label for="max_messages">Messages to scan (cap, for a first test keep this modest)</label>
+    <input type="number" id="max_messages" name="max_messages" value="600" min="50" max="5000" step="50">
+    <button type="submit" class="btn btn-primary">Scan inbox</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Discovered so far</h2>
+  <p class="counts">
+    <span>{{ counts.total }} total</span> ·
+    <span class="pill pending">{{ counts.pending }} needs review</span>
+    <span class="pill confirmed">{{ counts.confirmed }} confirmed</span>
+    <span class="pill rejected">{{ counts.rejected }} rejected</span>
+  </p>
+  <a class="btn btn-secondary" href="/dashboard">Open dashboard</a>
+</div>
+
+<div class="card muted">
+  <h2>California Data Broker Cleanup (DROP)</h2>
+  <p>
+    Cookie Monster can identify companies in your personal digital footprint —
+    the ones you actually gave your information to directly. California's
+    <strong>Delete Request and Opt-out Platform (DROP)</strong> can separately
+    submit deletion requests to registered <em>data brokers</em> (companies that
+    collect and sell data about you without a direct relationship).
+  </p>
+  <p><strong>Cookie Monster does not replace DROP</strong> — they cover different, complementary parts of your digital footprint.</p>
+  <a class="btn btn-secondary" href="https://privacy.ca.gov/" target="_blank" rel="noopener">Open California DROP</a>
+  <p class="fine-print">DROP is run by the California Privacy Protection Agency. Learn more at <a href="https://cppa.ca.gov/data_brokers/" target="_blank" rel="noopener">cppa.ca.gov/data_brokers</a>.</p>
+</div>
+
+{% endblock %}
