@@ -36,27 +36,34 @@ def _build_service(creds: Credentials):
 
 
 def _collect_candidate_ids(service, max_results: int) -> list[str]:
-    seen: set[str] = set()
-    per_query_cap = max(50, max_results // len(SEARCH_QUERIES))
-    for query in SEARCH_QUERIES:
-        page_token = None
-        collected_for_query = 0
-        while collected_for_query < per_query_cap:
-            resp = (
-                service.users()
-                .messages()
-                .list(userId="me", q=query, pageToken=page_token, maxResults=100)
-                .execute()
+    message_ids: list[str] = []
+    page_token = None
+
+    while len(message_ids) < max_results:
+        remaining = max_results - len(message_ids)
+
+        resp = (
+            service.users()
+            .messages()
+            .list(
+                userId="me",
+                pageToken=page_token,
+                maxResults=min(100, remaining),
             )
-            for m in resp.get("messages", []):
-                seen.add(m["id"])
-            collected_for_query += len(resp.get("messages", []))
-            page_token = resp.get("nextPageToken")
-            if not page_token or not resp.get("messages"):
-                break
-        if len(seen) >= max_results:
+            .execute()
+        )
+
+        messages = resp.get("messages", [])
+
+        for message in messages:
+            message_ids.append(message["id"])
+
+        page_token = resp.get("nextPageToken")
+
+        if not page_token or not messages:
             break
-    return list(seen)[:max_results]
+
+    return message_ids
 
 
 def _headers_dict(message: dict) -> dict[str, str]:
