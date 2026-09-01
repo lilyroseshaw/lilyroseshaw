@@ -90,6 +90,39 @@
       {% if c.status != "confirmed" %}
       <form method="post" action="/api/companies/{{ c.id }}/confirm"><button type="submit" class="btn btn-confirm">Confirm</button></form>
       {% endif %}
+      {% if c.status == "confirmed" and ("edikted" in c.name|lower or "edikted" in c.domain|lower) %}
+      <a href="https://edikted.com/pages/ccpa-compliance"
+         target="_blank"
+         rel="noopener"
+         class="btn btn-confirm"
+         onclick="return confirm('Edikted says requesting deletion will also delete your Edikted account. Continue to Edikted’s official deletion page?');">
+        Request deletion
+      </a>
+      {% endif %}
+
+      {% if c.status == "confirmed" and ("lyft" in c.name|lower or "lyft" in c.domain|lower) %}
+      <a href="https://account.lyft.com/privacy/data/delete"
+         target="_blank"
+         rel="noopener"
+         class="btn btn-confirm"
+         onclick="return confirm('Warning: Lyft says this process deletes your Lyft account. Once the deletion request is completed, it cannot be undone. Continue to Lyft’s deletion page?');">
+        Request deletion
+      </a>
+      {% endif %}
+
+      {% if c.status == "confirmed" and c.deletion_status != "submitted" %}
+      <form method="post" action="/api/companies/{{ c.id }}/deletion-submitted">
+        <button type="submit" class="btn btn-secondary"
+          onclick="return confirm('Only mark this submitted if you actually completed the company’s deletion request.');">
+          Mark deletion submitted
+        </button>
+      </form>
+      {% elif c.deletion_status == "submitted" %}
+      <span class="pill confirmed">
+        Deletion requested{% if c.deletion_requested_at %} {{ c.deletion_requested_at.strftime("%b %d, %Y") }}{% endif %}
+      </span>
+      {% endif %}
+
       {% if c.status != "rejected" %}
       <form method="post" action="/api/companies/{{ c.id }}/reject"><button type="submit" class="btn btn-reject">Reject</button></form>
       {% endif %}

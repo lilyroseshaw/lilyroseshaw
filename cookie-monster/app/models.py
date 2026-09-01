@@ -44,6 +44,10 @@ class Company(Base):
 
     user_corrected: Mapped[bool] = mapped_column(default=False)
 
+    deletion_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    deletion_requested_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    deletion_evidence: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow

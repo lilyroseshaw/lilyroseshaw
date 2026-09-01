@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- pink Y2K shadow -->
+  <path
+    d="M16 4h32v4h8v8h4v20h-4v12h-8v8H16v-4H8v-8H4V16h4V8h8z"
+    fill="#ff8fc8"
+  />
+
+  <!-- cookie -->
+  <path
+    d="M16 8h28v4h8v8h4v12h-8v8h-8v8H24v-4h-8v-8H8V20h4v-8h4z"
+    fill="#c8793e"
+  />
+
+  <!-- cookie highlight -->
+  <path
+    d="M16 12h20v4H16zM12 20h8v4h-8z"
+    fill="#e9a15f"
+  />
+
+  <!-- chocolate chips -->
+  <rect x="22" y="18" width="6" height="6" fill="#63351f"/>
+  <rect x="38" y="14" width="6" height="6" fill="#63351f"/>
+  <rect x="16" y="32" width="6" height="6" fill="#63351f"/>
+  <rect x="34" y="34" width="7" height="7" fill="#63351f"/>
+  <rect x="24" y="42" width="6" height="6" fill="#63351f"/>
+
+  <!-- bite marks -->
+  <circle cx="54" cy="28" r="6" fill="#fff3fa"/>
+  <circle cx="54" cy="40" r="6" fill="#fff3fa"/>
+  <circle cx="48" cy="50" r="6" fill="#fff3fa"/>
+
+  <!-- sparkle -->
+  <path
+    d="M10 6h3v3h3v3h-3v3h-3v-3H7V9h3z"
+    fill="#fff"
+  />
+</svg>

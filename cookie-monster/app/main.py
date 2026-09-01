@@ -1,3 +1,4 @@
+import datetime
 import secrets
 
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -175,6 +176,24 @@ def _set_status(company_id: int, status: str):
     finally:
         db.close()
     return RedirectResponse("/dashboard", status_code=303)
+
+
+@app.post("/api/companies/{company_id}/deletion-submitted")
+def mark_deletion_submitted(company_id: int):
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+
+        company.deletion_status = "submitted"
+        company.deletion_requested_at = datetime.datetime.utcnow()
+        company.deletion_evidence = "User confirmed deletion request was submitted"
+        db.commit()
+    finally:
+        db.close()
+
+    return RedirectResponse("/dashboard?status=confirmed", status_code=303)
 
 
 @app.post("/api/companies/{company_id}/correct")
