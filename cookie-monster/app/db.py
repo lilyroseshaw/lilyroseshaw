@@ -20,8 +20,9 @@ class Base(DeclarativeBase):
 
 
 def init_db() -> None:
-    from app import models  # noqa: F401  (register models on Base.metadata)
+    from app import migrations, models  # noqa: F401  (register models on Base.metadata)
 
+    migrations.migrate(engine, config.DATABASE_PATH)
     Base.metadata.create_all(bind=engine)
 
 

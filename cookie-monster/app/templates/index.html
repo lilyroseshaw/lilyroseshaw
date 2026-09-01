@@ -44,6 +44,28 @@
 
 {% if connected_address %}
 <div class="card">
+  <h2>Optional — Enable automatic sending for email-based deletion requests</h2>
+  <p>
+    For companies whose only deletion mechanism is email, Cookie Monster can draft
+    the request either way. By default you copy/send it yourself. If you'd rather
+    Cookie Monster send it for you, that requires a <strong>separate</strong> Google
+    permission on top of the read-only one above:
+  </p>
+  <ul class="permission-list">
+    <li><strong>Additional scope requested:</strong> <code>gmail.send</code> — send-only.
+      It cannot read, delete, or modify anything already in your inbox.</li>
+    <li><strong>What it's used for:</strong> only sending a deletion-request email you've
+      already reviewed, only after you click "Continue with deletion" for that specific
+      company. Never sent automatically or in the background.</li>
+  </ul>
+  {% if send_enabled %}
+    <p class="connected">✅ Automatic sending is enabled.</p>
+  {% else %}
+    <a href="/auth/enable-sending" class="btn btn-secondary">Enable automatic sending</a>
+  {% endif %}
+</div>
+
+<div class="card">
   <h2>Step 2 — Scan your inbox</h2>
   <p>
     This searches for messages that look like account, order, subscription, or

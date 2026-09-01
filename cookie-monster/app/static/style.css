@@ -802,3 +802,146 @@ header::after {
     font-size: 14px;
   }
 }
+
+/* =========================
+   DELETE MY DATA
+   ========================= */
+
+.btn-delete {
+  color: white;
+
+  background:
+    linear-gradient(
+      135deg,
+      #ff6a6a,
+      #ff3f6b
+    );
+
+  box-shadow:
+    3px 3px 0 #c22a4d,
+    0 0 10px rgba(255, 63, 107, 0.3);
+}
+
+.btn-delete::before {
+  content: "🗑";
+  margin-right: 5px;
+}
+
+.deletion-block {
+  margin-top: 14px;
+  padding-top: 14px;
+
+  border-top: 2px dashed #f0cce0;
+}
+
+.deletion-line {
+  margin: 0 0 10px;
+  font-weight: 800;
+}
+
+.deletion-ready {
+  color: #1f8a5a;
+}
+
+.deletion-done {
+  color: #1f8a5a;
+}
+
+.deletion-failed {
+  color: var(--hot-pink);
+}
+
+.deletion-detail {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mark-completed-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.mark-completed-form input[type="text"] {
+  flex: 1 1 220px;
+}
+
+.duplicate-warning {
+  margin-top: 12px;
+  padding: 12px;
+
+  background: var(--light-pink);
+  border: 2px dashed var(--hot-pink);
+  border-radius: 13px;
+}
+
+.duplicate-warning p {
+  margin: 0 0 8px;
+  color: var(--ink);
+  font-weight: 800;
+}
+
+/* Confirmation modal */
+
+.deletion-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 20px;
+
+  background: rgba(69, 36, 58, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+.deletion-modal-card {
+  width: min(480px, 100%);
+
+  background: var(--cream);
+  border: 3px solid white;
+  border-radius: 22px;
+
+  box-shadow:
+    0 0 0 2px var(--border),
+    8px 8px 0 rgba(255, 114, 182, 0.25);
+
+  padding: 26px;
+}
+
+.deletion-modal-card h3 {
+  margin-top: 0;
+  color: var(--hot-pink);
+}
+
+#deletion-modal-action {
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.deletion-modal-caution {
+  margin-top: 14px;
+  padding: 10px 12px;
+
+  background: var(--lavender);
+  border-radius: 11px;
+
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.deletion-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+
+  margin-top: 20px;
+}

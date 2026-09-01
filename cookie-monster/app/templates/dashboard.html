@@ -90,39 +90,6 @@
       {% if c.status != "confirmed" %}
       <form method="post" action="/api/companies/{{ c.id }}/confirm"><button type="submit" class="btn btn-confirm">Confirm</button></form>
       {% endif %}
-      {% if c.status == "confirmed" and ("edikted" in c.name|lower or "edikted" in c.domain|lower) %}
-      <a href="https://edikted.com/pages/ccpa-compliance"
-         target="_blank"
-         rel="noopener"
-         class="btn btn-confirm"
-         onclick="return confirm('Edikted says requesting deletion will also delete your Edikted account. Continue to Edikted’s official deletion page?');">
-        Request deletion
-      </a>
-      {% endif %}
-
-      {% if c.status == "confirmed" and ("lyft" in c.name|lower or "lyft" in c.domain|lower) %}
-      <a href="https://account.lyft.com/privacy/data/delete"
-         target="_blank"
-         rel="noopener"
-         class="btn btn-confirm"
-         onclick="return confirm('Warning: Lyft says this process deletes your Lyft account. Once the deletion request is completed, it cannot be undone. Continue to Lyft’s deletion page?');">
-        Request deletion
-      </a>
-      {% endif %}
-
-      {% if c.status == "confirmed" and c.deletion_status != "submitted" %}
-      <form method="post" action="/api/companies/{{ c.id }}/deletion-submitted">
-        <button type="submit" class="btn btn-secondary"
-          onclick="return confirm('Only mark this submitted if you actually completed the company’s deletion request.');">
-          Mark deletion submitted
-        </button>
-      </form>
-      {% elif c.deletion_status == "submitted" %}
-      <span class="pill confirmed">
-        Deletion requested{% if c.deletion_requested_at %} {{ c.deletion_requested_at.strftime("%b %d, %Y") }}{% endif %}
-      </span>
-      {% endif %}
-
       {% if c.status != "rejected" %}
       <form method="post" action="/api/companies/{{ c.id }}/reject"><button type="submit" class="btn btn-reject">Reject</button></form>
       {% endif %}
@@ -130,8 +97,87 @@
       <form method="post" action="/api/companies/{{ c.id }}/reset"><button type="submit" class="btn btn-secondary btn-small">Reset</button></form>
       {% endif %}
     </div>
+
+    {% if c.status == "confirmed" %}
+    <div class="deletion-block deletion-{{ c.deletion_status|lower }}">
+      {% if c.deletion_status in ("NOT_STARTED", "UNKNOWN") %}
+        <p class="deletion-line">🔍 Deletion method not verified yet.</p>
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/research">
+          <button type="submit" class="btn btn-secondary btn-small">Research deletion method</button>
+        </form>
+
+      {% elif c.deletion_status == "METHOD_LOOKUP" %}
+        <p class="deletion-line">⏳ Finding deletion method…</p>
+
+      {% elif c.deletion_status == "READY" %}
+        <p class="deletion-line deletion-ready">✅ Deletion method ready ({{ c.deletion_method|lower|replace('_', ' ') }})</p>
+        <button type="button" class="btn btn-delete delete-my-data-btn"
+          data-id="{{ c.id }}"
+          data-name="{{ c.name|e }}"
+          data-action="{% if c.deletion_method == 'EMAIL_REQUEST' %}{% if send_enabled %}Cookie Monster will send a deletion request email to {{ c.deletion_email or ('privacy@' ~ c.domain) }} from your connected Gmail address.{% else %}Cookie Monster will prepare a deletion request email for {{ c.deletion_email or ('privacy@' ~ c.domain) }} for you to send yourself — automatic sending isn't enabled.{% endif %}{% else %}Cookie Monster will take you to {{ c.name|e }}'s official deletion page. Completing the request there is up to you — Cookie Monster can't do it on your behalf.{% endif %}"
+          data-details="{{ (c.deletion_instructions or '')|e }}"
+        >🗑️ Delete my data</button>
+
+      {% elif c.deletion_status == "USER_ACTION_REQUIRED" %}
+        <p class="deletion-line">🔑 Deletion requires visiting {{ c.name }}'s own page.</p>
+        {% if c.deletion_instructions %}<p class="deletion-detail">{{ c.deletion_instructions }}</p>{% endif %}
+        {% if c.deletion_url %}
+        <a href="{{ c.deletion_url }}" target="_blank" rel="noopener" class="btn btn-secondary btn-small">Continue deletion ↗</a>
+        {% endif %}
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/mark-completed" class="mark-completed-form">
+          <input type="text" name="evidence_note" placeholder="Optional: confirmation # or note">
+          <button type="submit" class="btn btn-secondary btn-small"
+            onclick="return confirm('Only mark this completed if you actually finished the request on {{ c.name|e }}’s site.');">
+            Mark as completed
+          </button>
+        </form>
+
+      {% elif c.deletion_status == "SUBMITTED" %}
+        <p class="deletion-line deletion-done">📨 Deletion requested{% if c.deletion_requested_at %} {{ c.deletion_requested_at.strftime('%b %d, %Y') }}{% endif %}. Awaiting confirmation.</p>
+
+      {% elif c.deletion_status == "COMPLETED" %}
+        <p class="deletion-line deletion-done">✅ Deletion completed{% if c.deletion_completed_at %} {{ c.deletion_completed_at.strftime('%b %d, %Y') }}{% endif %}{% if c.deletion_evidence and c.deletion_evidence.type == "user_reported" %} (marked by you){% endif %}</p>
+
+      {% elif c.deletion_status == "FAILED" %}
+        <p class="deletion-line deletion-failed">⚠️ Deletion attempt failed{% if c.deletion_error %}: {{ c.deletion_error }}{% endif %}</p>
+        <button type="button" class="btn btn-secondary btn-small delete-my-data-btn"
+          data-id="{{ c.id }}" data-name="{{ c.name|e }}"
+          data-action="Cookie Monster will try this deletion request again."
+          data-details="{{ (c.deletion_instructions or '')|e }}"
+        >Try again</button>
+
+      {% elif c.deletion_status == "VERIFICATION_NEEDED" %}
+        <p class="deletion-line">🔒 {{ c.name }} requires additional verification to complete this request.</p>
+      {% endif %}
+
+      {% if duplicate_id and duplicate_id|int == c.id %}
+      <div class="duplicate-warning">
+        <p>⚠️ A request for {{ c.name }} was already marked <strong>{{ c.deletion_status|lower }}</strong>. Send it again?</p>
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/execute">
+          <input type="hidden" name="force" value="true">
+          <button type="submit" class="btn btn-reject btn-small">Yes, send again</button>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
   </div>
 {% endfor %}
+</div>
+
+<div id="deletion-modal" class="deletion-modal" hidden>
+  <div class="deletion-modal-card">
+    <h3 id="deletion-modal-title">Delete my data</h3>
+    <p id="deletion-modal-action"></p>
+    <p id="deletion-modal-details" class="deletion-detail"></p>
+    <p class="deletion-modal-caution">Some companies require identity verification before completing a deletion request. Cookie Monster will never bypass CAPTCHA, MFA, or login requirements on your behalf.</p>
+    <form method="post" id="deletion-modal-form">
+      <div class="deletion-modal-actions">
+        <button type="button" class="btn btn-secondary" id="deletion-modal-cancel">Cancel</button>
+        <button type="submit" class="btn btn-delete">Continue with deletion</button>
+      </div>
+    </form>
+  </div>
 </div>
 
 <div class="card merge-bar">

@@ -14,7 +14,16 @@ GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:80
 
 # Minimum viable read-only scope: headers/labels only, never message bodies.
 # See README "Gmail data processing" section for why this scope was chosen.
+# This is the ONLY scope ever requested for connecting/scanning Gmail - it is
+# never silently combined with GMAIL_SEND_SCOPE below.
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.metadata"]
+
+# Send-only scope (cannot read, delete, or modify existing mail). Only ever
+# requested via a separate, explicit, clearly-labeled consent step for the
+# optional "send deletion request emails automatically" feature - see
+# google_oauth.get_send_authorization_url() and the /auth/enable-sending
+# route. Never bundled into GMAIL_SCOPES / the default connect flow.
+GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 
 COOKIE_MONSTER_SECRET_KEY = os.environ.get("COOKIE_MONSTER_SECRET_KEY", "")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-only-insecure-secret")

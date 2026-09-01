@@ -24,9 +24,51 @@ behalf. It exists to answer one question:
    a few example subject lines).
 5. **Review** the results in a dashboard: confirm, reject, correct, merge
    duplicates, search/filter.
+6. **Resolve a deletion method** for each company automatically, from a
+   small human-curated registry (no live web research, no guessing — see
+   "Deletion requests" below).
+7. **Delete my data**: one button per confirmed company. What it actually
+   does depends on the company's verified method — see "Deletion requests -
+   what's really automatic" below. Nothing is ever submitted without you
+   confirming it first, and nothing is marked "submitted" without real
+   evidence that it happened.
 
-That's the whole scope of this version. Privacy-policy research and draft
-privacy-request generation are **not built yet** — see `TODO.md`.
+Privacy-policy *research beyond the curated registry* and general request
+generation for methods other than email are **not built yet** — see `TODO.md`.
+
+## Deletion requests — what's really automatic
+
+Every confirmed company gets a deletion method resolved automatically from
+`app/deletion_registry.py` — a small, human-curated list (not a live web
+scraper; see that file's docstring for why). If a company isn't in it yet,
+the dashboard shows "Deletion method not verified yet" and a "Research
+deletion method" button rather than pretending to know.
+
+What actually happens when you click **Delete my data** depends on the
+method:
+
+- **`EMAIL_REQUEST`**: Cookie Monster always drafts the request. It only
+  **sends** it for you if you've completed a *separate*, explicitly-labeled
+  OAuth consent for `gmail.send` (Home page → "Enable automatic sending" —
+  off by default). Without that, you get the draft to copy/send yourself.
+- **`WEB_FORM` / `PRIVACY_PORTAL` / `ACCOUNT_SETTING`**: **not** automated.
+  Virtually every real one of these requires login, email verification, or
+  a CAPTCHA — automating around that is exactly what this project's own
+  safety rules forbid (see Part 10 of the design brief / Security
+  considerations below). Cookie Monster deep-links you to the company's
+  official page; you complete it, then tell Cookie Monster it's done.
+- **`API`**: wired in the state machine for completeness, but no registry
+  entry currently has a real, documented deletion API, so this path is
+  inert today. It will never fabricate one.
+- **`UNKNOWN`**: nothing is ever submitted.
+
+**Status is never faked.** `SUBMITTED` is reserved for cases Cookie Monster
+has real evidence for (a Gmail message ID from an actual send). Completing
+a web form or emailing a company yourself and telling Cookie Monster so is
+recorded as `COMPLETED` and visibly labeled "marked by you" — that
+distinction is deliberate, not a bug. Clicking "Delete my data" again after
+a request already has an outcome shows a warning instead of silently
+resubmitting.
 
 ## Current limitations
 
@@ -39,8 +81,12 @@ privacy-request generation are **not built yet** — see `TODO.md`.
 - Only Gmail is supported (no other providers).
 - Scans are capped (default 600 messages) per run to keep runtime and API
   usage bounded; you can re-run scans to pick up more.
-- No automated privacy request submission of any kind, anywhere, ever, in
-  this version.
+- No automated privacy request submission except sending one email, and only
+  when you've explicitly opted in via the separate `gmail.send` consent
+  step. Nothing is ever submitted via a company's website on your behalf.
+- The deletion registry ships with exactly two entries (Lyft, Edikted,
+  carried over from this app's previous hardcoded version) plus whatever
+  you add — see `app/deletion_registry.py` for how to add more responsibly.
 
 ## Setup instructions
 
@@ -122,9 +168,11 @@ then click **Scan inbox**, then **Open dashboard**.
 pytest
 ```
 
-Tests cover domain extraction, the evidence classifier, and the
-per-company aggregation logic. They run entirely offline against fixture
-data — no Gmail account or network access required.
+Tests cover domain extraction, the evidence classifier, per-company
+aggregation, the deletion registry/resolver/engine (including duplicate-send
+prevention and that `SUBMITTED` is never set without real evidence), and the
+SQLite migration. They run entirely offline against fixture data and an
+in-memory/temp-file database — no Gmail account or network access required.
 
 ## Gmail OAuth scope — exactly what is requested and why
 
@@ -140,13 +188,30 @@ itself refuses `format=full`/`raw` requests under this scope, so the app is
 structurally incapable of reading a message body or attachment, not just
 policy-restricted from it.
 
-**Never requested:** `gmail.readonly` (body access), `gmail.send`,
-`gmail.modify`, `gmail.labels`, any Contacts/Drive/Calendar scope, or your
-Google password (Google's login page handles authentication entirely; this
-app never sees your credentials).
+**Never requested by the connect/scan flow:** `gmail.readonly` (body
+access), `gmail.send`, `gmail.modify`, `gmail.labels`, any
+Contacts/Drive/Calendar scope, or your Google password (Google's login page
+handles authentication entirely; this app never sees your credentials).
 
-**Never done:** sending mail, deleting mail, labeling/archiving mail,
-modifying anything in your inbox.
+**Never done:** deleting mail, labeling/archiving mail, modifying anything
+in your inbox.
+
+### Optional second scope: `gmail.send`
+
+If you want Cookie Monster to actually send deletion-request emails for you
+(instead of just drafting them), there's a **separate** opt-in on the home
+page ("Enable automatic sending") that requests one more scope:
+
+```
+https://www.googleapis.com/auth/gmail.send
+```
+
+This is send-only — it cannot read, delete, or modify anything already in
+your inbox. It is never requested as part of connecting/scanning Gmail,
+never silently combined with `gmail.metadata`, and every email it sends
+still requires you to click "Continue with deletion" for that specific
+company first. Declining this just means you copy/send the drafted request
+yourself, which is the default.
 
 ## How Gmail data is processed
 
@@ -175,15 +240,29 @@ up to 5 human-readable detection reasons,
 review status (pending/confirmed/rejected)
 ```
 
+Plus, per company, deletion-request tracking:
+
+```
+deletion_method, deletion_action_capability, deletion_status,
+deletion_url, deletion_email, deletion_instructions,
+deletion_verified, deletion_source_url, deletion_last_checked,
+deletion_requested_at, deletion_completed_at, deletion_error,
+deletion_evidence (JSON - message IDs, timestamps, confirmation
+references, or a short user-typed note; never credentials, tokens,
+or third-party account data)
+```
+
 Plus one encrypted OAuth refresh token (Fernet-encrypted with
 `COOKIE_MONSTER_SECRET_KEY`), so you don't have to re-authenticate every
-run.
+run. If you've enabled automatic sending, the same token row also records
+that the `gmail.send` scope was granted (needed to know whether to send or
+just draft) — no separate secret is stored for it.
 
 **Never fetched, never stored:** message bodies, snippets, attachments,
 full header sets, message IDs (beyond the duration of one scan, in memory
 only), sender email addresses, names, order numbers, shipping addresses,
-payment details, or any other content beyond the Subject/From/Date headers
-of matched messages.
+payment details, third-party account passwords, or any other content
+beyond the Subject/From/Date headers of matched messages.
 
 ### Delete all imported data
 
@@ -216,3 +295,11 @@ rm -f data/cookie_monster.db
 - This prototype does not implement multi-user isolation, rate limiting, or
   production-grade secret storage (e.g. a KMS) — see `TODO.md` for what a
   real product would need.
+- Schema changes to an existing database run through `app/migrations.py`,
+  which is additive-only (never drops/renames a column) and always copies
+  the `.db` file aside first (`data/cookie_monster.db.bak-<timestamp>`)
+  before changing anything in an existing table.
+- Cookie Monster never automates a third-party company's login, CAPTCHA, or
+  web form. The only action it can take on your behalf without you doing it
+  yourself afterward is sending one email, and only after the separate
+  `gmail.send` opt-in plus a per-company confirmation click.

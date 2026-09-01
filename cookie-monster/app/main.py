@@ -1,4 +1,3 @@
-import datetime
 import secrets
 
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -7,9 +6,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import config, google_oauth
+from app import config, deletion_engine, google_oauth
 from app.aggregator import aggregate, store
 from app.db import get_session, init_db
+from app.deletion_resolver import resolve_deletion_method
 from app.gmail_scan import scan_inbox
 from app.models import Company
 
@@ -45,6 +45,7 @@ def index(request: Request):
     db = get_session()
     try:
         connected_address = google_oauth.get_connected_address(db)
+        send_enabled = google_oauth.has_send_scope(db)
         counts = _status_counts(db)
     finally:
         db.close()
@@ -56,6 +57,7 @@ def index(request: Request):
             "scope_explanation": GMAIL_SCOPE_EXPLANATION,
             "counts": counts,
             "google_configured": bool(config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET),
+            "send_enabled": send_enabled,
         },
     )
 
@@ -67,6 +69,22 @@ def auth_login(request: Request):
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     request.session["oauth_state"] = state
+    request.session["oauth_scopes"] = config.GMAIL_SCOPES
+    return RedirectResponse(auth_url)
+
+
+@app.get("/auth/enable-sending")
+def auth_enable_sending(request: Request):
+    """SEPARATE, explicit consent step for the optional 'send deletion
+    request emails automatically' feature. Never reached from the normal
+    connect/scan flow - only from its own clearly-labeled button, after the
+    user has read what gmail.send additionally grants."""
+    try:
+        auth_url, state = google_oauth.get_send_authorization_url()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    request.session["oauth_state"] = state
+    request.session["oauth_scopes"] = [*config.GMAIL_SCOPES, config.GMAIL_SEND_SCOPE]
     return RedirectResponse(auth_url)
 
 
@@ -75,10 +93,11 @@ def auth_callback(request: Request, code: str | None = None, state: str | None =
     if error:
         return RedirectResponse(f"/?error={error}")
     expected_state = request.session.pop("oauth_state", None)
+    scopes = request.session.pop("oauth_scopes", config.GMAIL_SCOPES)
     if not code or not state or not expected_state or not secrets.compare_digest(state, expected_state):
         raise HTTPException(status_code=400, detail="Invalid OAuth state or missing code")
 
-    creds = google_oauth.exchange_code_for_credentials(code)
+    creds = google_oauth.exchange_code_for_credentials(code, scopes=scopes)
     gmail_address = google_oauth.get_gmail_address(creds)
 
     db = get_session()
@@ -132,6 +151,7 @@ def dashboard(request: Request, status: str = "all", q: str = ""):
             )
         companies = query.order_by(Company.evidence_count.desc()).all()
         counts = _status_counts(db)
+        send_enabled = google_oauth.has_send_scope(db)
     finally:
         db.close()
 
@@ -146,6 +166,8 @@ def dashboard(request: Request, status: str = "all", q: str = ""):
             "scanned": request.query_params.get("scanned"),
             "created": request.query_params.get("created"),
             "updated": request.query_params.get("updated"),
+            "duplicate_id": request.query_params.get("duplicate"),
+            "send_enabled": send_enabled,
         },
     )
 
@@ -178,22 +200,60 @@ def _set_status(company_id: int, status: str):
     return RedirectResponse("/dashboard", status_code=303)
 
 
-@app.post("/api/companies/{company_id}/deletion-submitted")
-def mark_deletion_submitted(company_id: int):
+@app.post("/api/companies/{company_id}/deletion/research")
+def research_deletion_method(company_id: int):
+    """'Research deletion method' - re-checks the verified registry (only
+    the registry; never guesses). Cheap/instant, safe to click repeatedly."""
     db = get_session()
     try:
         company = db.get(Company, company_id)
         if company is None:
             raise HTTPException(status_code=404, detail="Company not found")
-
-        company.deletion_status = "submitted"
-        company.deletion_requested_at = datetime.datetime.utcnow()
-        company.deletion_evidence = "User confirmed deletion request was submitted"
+        resolve_deletion_method(company, force=True)
         db.commit()
     finally:
         db.close()
+    return RedirectResponse("/dashboard", status_code=303)
 
-    return RedirectResponse("/dashboard?status=confirmed", status_code=303)
+
+@app.post("/api/companies/{company_id}/deletion/execute")
+def execute_company_deletion(company_id: int, force: bool = Form(False)):
+    """The one 'Delete my data' action. What actually happens depends on the
+    company's deletion_method - see deletion_engine.execute_deletion. If a
+    request was already submitted/completed, this refuses to silently repeat
+    it unless force=True (the UI re-confirms with the user first)."""
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        try:
+            deletion_engine.execute_deletion(db, company, force_resend=force)
+        except deletion_engine.DuplicateRequestWarning:
+            return RedirectResponse(f"/dashboard?duplicate={company_id}", status_code=303)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        db.close()
+    return RedirectResponse("/dashboard", status_code=303)
+
+
+@app.post("/api/companies/{company_id}/deletion/mark-completed")
+def mark_deletion_completed(company_id: int, evidence_note: str = Form("")):
+    """Self-report path for WEB_FORM/ACCOUNT_SETTING/PRIVACY_PORTAL and any
+    EMAIL_REQUEST the user sent themselves: the user completed the company's
+    own process outside Cookie Monster and is telling us so. Recorded as
+    COMPLETED (self-reported), never as SUBMITTED - see deletion_engine.py."""
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        deletion_engine.mark_user_completed(company, evidence_note)
+        db.commit()
+    finally:
+        db.close()
+    return RedirectResponse("/dashboard", status_code=303)
 
 
 @app.post("/api/companies/{company_id}/correct")

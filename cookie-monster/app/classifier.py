@@ -94,15 +94,22 @@ class Classification:
     subject: str = ""
 
 
+def normalize_domain(raw_domain: str) -> str | None:
+    """Collapses any subdomain to its registrable root, e.g.
+    mail.notifications.amazon.com -> amazon.com. Used both when classifying
+    messages and when looking up a company's deletion provider, so the two
+    never drift apart (see deletion_registry.py)."""
+    ext = _tld_extract((raw_domain or "").lower().strip())
+    if not ext.domain or not ext.suffix:
+        return None
+    return f"{ext.domain}.{ext.suffix}"
+
+
 def extract_domain(from_header: str) -> str | None:
     _, email_addr = parseaddr(from_header or "")
     if "@" not in email_addr:
         return None
-    raw_domain = email_addr.split("@")[-1].lower().strip()
-    ext = _tld_extract(raw_domain)
-    if not ext.domain or not ext.suffix:
-        return None
-    return f"{ext.domain}.{ext.suffix}"
+    return normalize_domain(email_addr.split("@")[-1])
 
 
 def _guess_company_name(from_header: str, domain: str) -> str:

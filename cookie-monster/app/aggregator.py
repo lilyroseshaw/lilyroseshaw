@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
 
 from app.classifier import Classification
+from app.deletion_resolver import resolve_many
 from app.models import Company
 
 STRONG_EVIDENCE = {
@@ -86,6 +87,7 @@ def store(db: Session, aggregated: dict[str, _DomainAgg]) -> dict[str, int]:
     """Upserts aggregated per-domain evidence into the companies table.
     Never overwrites a company the user has already confirmed/rejected/edited."""
     created, updated = 0, 0
+    touched_companies: list[Company] = []
     for domain, agg in aggregated.items():
         existing = db.query(Company).filter(Company.domain == domain).one_or_none()
         total_count = sum(agg.evidence_counter.values())
@@ -93,21 +95,21 @@ def store(db: Session, aggregated: dict[str, _DomainAgg]) -> dict[str, int]:
         relationship_type = _dominant_relationship(agg)
 
         if existing is None:
-            db.add(
-                Company(
-                    name=agg.name,
-                    domain=domain,
-                    relationship_type=relationship_type,
-                    status="pending",
-                    confidence=confidence,
-                    evidence_count=total_count,
-                    evidence_types=sorted(agg.evidence_counter),
-                    example_subjects=agg.example_subjects,
-                    detection_reasons=agg.reasons,
-                    first_seen=agg.first_seen,
-                    last_seen=agg.last_seen,
-                )
+            new_company = Company(
+                name=agg.name,
+                domain=domain,
+                relationship_type=relationship_type,
+                status="pending",
+                confidence=confidence,
+                evidence_count=total_count,
+                evidence_types=sorted(agg.evidence_counter),
+                example_subjects=agg.example_subjects,
+                detection_reasons=agg.reasons,
+                first_seen=agg.first_seen,
+                last_seen=agg.last_seen,
             )
+            db.add(new_company)
+            touched_companies.append(new_company)
             created += 1
         else:
             existing.evidence_count += total_count
@@ -127,7 +129,12 @@ def store(db: Session, aggregated: dict[str, _DomainAgg]) -> dict[str, int]:
             if not existing.user_corrected:
                 existing.confidence = _score_confidence_from(existing.evidence_count, set(existing.evidence_types))
                 existing.relationship_type = relationship_type
+            touched_companies.append(existing)
             updated += 1
+
+    # Registry-lookup-only, no network calls - safe to run inline without
+    # slowing the scan down. Already-resolved companies are skipped (cached).
+    resolve_many(touched_companies)
 
     db.commit()
     return {"created": created, "updated": updated}

@@ -20,15 +20,30 @@ data and judged useful.
   every page load, with a visible "last researched" date and a manual
   re-check action.
 
-## Milestone 3 — Request generation (not started)
+## Milestone 3 — Request generation (deletion request done; others not started)
 
-- For a confirmed company, let the user choose a request type (delete,
-  access/know, correct, opt-out of sale/sharing, other).
-- Generate a draft request using the company's own published process.
-- Provide **[Copy Request]** and, if a real privacy request URL was found
-  in Milestone 2, **[Open Company's Privacy Request Page]**.
-- Explicitly **never** auto-submit. This stays a hard rule for the
-  foreseeable future, not just this prototype phase.
+Deletion requests now work end-to-end for the methods a curated registry
+entry can support (`app/deletion_registry.py`, `deletion_resolver.py`,
+`deletion_engine.py`) - see README "Deletion requests - what's really
+automatic". Still open:
+
+- Request types beyond deletion (access/know, correct, opt-out of
+  sale/sharing) - only deletion is wired up today.
+- Growing the deletion registry past its current two entries. Each new
+  entry needs a human to actually visit the company's real privacy page and
+  confirm the method/URL/email - do not batch-generate entries from search
+  results or an LLM's general knowledge; that's exactly the "guessed URL"
+  failure mode this project rules out. A lightweight review script/checklist
+  for adding entries would help once there's real usage data on which
+  companies matter most.
+- `DeletionStatus.VERIFICATION_NEEDED` exists in the state machine but
+  nothing sets it yet - there's no way for Cookie Monster to know a company
+  is asking for ID verification unless the user tells it (which today just
+  goes through the same self-report "Mark as completed" flow). Detecting
+  this would need reading a reply from the company, which is out of scope
+  while the Gmail scope stays metadata-only.
+- `DeletionMethod.API` is fully wired in the engine but no registry entry
+  has a real API yet, so it's currently inert.
 
 ## Longer-term product ideas (explicitly deferred)
 
@@ -55,8 +70,16 @@ data and judged useful.
   it's presented as more than a draft/suggestion.
 - Rate limiting / abuse protection if this ever moves beyond a
   single-user local tool.
-- Structured, versioned migrations for the SQLite schema (currently just
-  `create_all` — fine for a prototype, not for real data over time).
+- Replace the hand-rolled additive migration in `app/migrations.py` with a
+  real migration framework (e.g. Alembic) if the schema keeps evolving -
+  today's version only knows how to add columns and normalize the specific
+  legacy `deletion_status`/`deletion_evidence` shape from the previous
+  version; it isn't a general migration tool.
+- `index.html` (the home page) still uses pre-redesign CSS classes
+  (`.hero`, `.lede`, `.permission-list`, `.connected`, `.card.warning`,
+  `.fine-print`) that no longer exist in `style.css` after the Y2K redesign
+  of `dashboard.html`/`base.html` - it likely renders unstyled. Worth a pass
+  once the redesign continues past the dashboard.
 
 ## Explicitly not planned (guardrails, not gaps)
 
