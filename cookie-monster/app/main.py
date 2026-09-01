@@ -6,11 +6,14 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from googleapiclient.errors import HttpError
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import config, deletion_engine, google_oauth
 from app.aggregator import aggregate, store
 from app.db import get_session, init_db
+from app.deletion_constants import DeletionStatus, EventSource, EventType
+from app.deletion_events import record_event
 from app.deletion_queue import start_background_worker
 from app.deletion_research import build_default_provider
 from app.deletion_resolver import resolve_deletion_method
@@ -267,8 +270,7 @@ def run_scan(max_messages: int = Form(600)):
     )
 
 
-@app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(request: Request, status: str = "all", q: str = ""):
+def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
     db = get_session()
     try:
         query = db.query(Company)
@@ -286,22 +288,28 @@ def dashboard(request: Request, status: str = "all", q: str = ""):
     finally:
         db.close()
 
-    return templates.TemplateResponse(
-        "dashboard.html",
-        {
-            "request": request,
-            "companies": companies,
-            "counts": counts,
-            "status_filter": status,
-            "query": q,
-            "scanned": request.query_params.get("scanned"),
-            "created": request.query_params.get("created"),
-            "updated": request.query_params.get("updated"),
-            "duplicate_id": request.query_params.get("duplicate"),
-            "send_enabled": send_enabled,
-            "response_tracking_enabled": response_tracking_enabled,
-        },
-    )
+    context = {
+        "request": request,
+        "companies": companies,
+        "counts": counts,
+        "status_filter": status,
+        "query": q,
+        "scanned": request.query_params.get("scanned"),
+        "created": request.query_params.get("created"),
+        "updated": request.query_params.get("updated"),
+        "duplicate_id": request.query_params.get("duplicate"),
+        "send_enabled": send_enabled,
+        "response_tracking_enabled": response_tracking_enabled,
+        "attach_preview": None,
+        "attach_preview_error": None,
+    }
+    context.update(extra)
+    return context
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request, status: str = "all", q: str = ""):
+    return templates.TemplateResponse("dashboard.html", _dashboard_context(request, status, q))
 
 
 @app.post("/api/companies/{company_id}/confirm")
@@ -410,6 +418,120 @@ def check_company_response_now(company_id: int):
         if creds is None or gmail_address is None:
             raise HTTPException(status_code=400, detail="Gmail is not connected")
         check_company_response(db, company, creds, gmail_address, _response_classifier)
+    finally:
+        db.close()
+    return RedirectResponse("/dashboard", status_code=303)
+
+
+def _check_attach_eligible(db, company: Company) -> str | None:
+    """Returns an error message if this company isn't eligible for manual
+    thread attachment, else None. Checked before BOTH the preview and the
+    confirm step - state can change between the two requests (another tab,
+    a background check completing first), so confirm must never trust that
+    what was true at preview time is still true now."""
+    if not google_oauth.has_readonly_scope(db):
+        return "Response tracking is not enabled - enable it first to attach a confirmation email."
+    if company.deletion_thread_id:
+        return "This company already has a tracked email thread."
+    if company.deletion_status in DeletionStatus.TERMINAL:
+        return "This request is already resolved - there's nothing left to track."
+    return None
+
+
+@app.post("/api/companies/{company_id}/deletion/attach-thread/preview")
+def preview_attach_thread(request: Request, company_id: int, gmail_ref: str = Form(...)):
+    """Step 1 of manually attaching a Gmail confirmation email to a
+    deletion request Cookie Monster did NOT itself send (e.g. one
+    submitted through a company's own web form or account settings - see
+    TODO.md's "Attach confirmation email" design notes). Resolves ONLY the
+    one specific message the user pasted a link/ID for - never a search or
+    listing - and shows just its From/Subject/Date for the user to
+    recognize before anything is saved. Re-rendered inline on the
+    dashboard rather than redirected, so the (potentially personal) email
+    subject line never ends up in a URL/browser history/server access log."""
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        error = _check_attach_eligible(db, company)
+        preview = None
+        if error is None:
+            try:
+                message_id = google_oauth.parse_gmail_message_ref(gmail_ref)
+                creds = google_oauth.load_credentials(db)
+                if creds is None:
+                    error = "Gmail is not connected."
+                else:
+                    resolved = google_oauth.fetch_message_preview(creds, message_id)
+                    preview = {"company_id": company_id, **resolved}
+            except ValueError as exc:
+                error = str(exc)
+            except HttpError as exc:
+                status_code = getattr(getattr(exc, "resp", None), "status", None)
+                error = (
+                    "That message couldn't be found in your Gmail account - double-check the link/ID."
+                    if status_code == 404
+                    else "Couldn't look up that message right now - please try again."
+                )
+        context = _dashboard_context(
+            request, "all", "",
+            attach_preview=preview,
+            attach_preview_error={"company_id": company_id, "message": error} if error else None,
+        )
+    finally:
+        db.close()
+    return templates.TemplateResponse("dashboard.html", context)
+
+
+@app.post("/api/companies/{company_id}/deletion/attach-thread/confirm")
+def confirm_attach_thread(company_id: int, message_id: str = Form(...)):
+    """Step 2: the explicit second confirmation. Re-validates eligibility
+    and re-resolves the EXACT SAME message shown at preview time, by its
+    message ID (not its thread ID - a thread's first message can have
+    different From/Subject/Date than the message the user actually
+    reviewed) - never trusts client-supplied from/subject/date, the server
+    is the sole source of truth for what gets written to the audit trail.
+    This ONLY sets deletion_thread_id and records the association - it
+    never touches deletion_status, deletion_evidence, or any other field,
+    so the original submission (e.g. a user-reported manual request) stays
+    historically exactly as it was. From here on, the existing response
+    tracker (deletion_response_tracker.py, unchanged) owns this thread."""
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        error = _check_attach_eligible(db, company)
+        if error:
+            raise HTTPException(status_code=400, detail=error)
+
+        creds = google_oauth.load_credentials(db)
+        if creds is None:
+            raise HTTPException(status_code=400, detail="Gmail is not connected.")
+        try:
+            resolved = google_oauth.fetch_message_preview(creds, message_id)
+        except HttpError as exc:
+            status_code = getattr(getattr(exc, "resp", None), "status", None)
+            detail = (
+                "That message couldn't be found in your Gmail account - double-check the link/ID."
+                if status_code == 404
+                else "Couldn't look up that message right now - please try again."
+            )
+            raise HTTPException(status_code=400, detail=detail) from exc
+
+        company.deletion_thread_id = resolved["thread_id"]
+        record_event(
+            db, company.id, EventType.THREAD_ASSOCIATED, source=EventSource.USER,
+            evidence={
+                "message_id": resolved["message_id"],
+                "thread_id": resolved["thread_id"],
+                "from": resolved["from"],
+                "subject": resolved["subject"],
+                "date": resolved["date"],
+            },
+        )
+        db.commit()
     finally:
         db.close()
     return RedirectResponse("/dashboard", status_code=303)

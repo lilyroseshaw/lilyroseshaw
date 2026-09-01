@@ -180,6 +180,51 @@ def fetch_thread_messages(creds: Credentials, thread_id: str) -> list[dict]:
     return thread.get("messages", [])
 
 
+def parse_gmail_message_ref(raw: str) -> str:
+    """Extracts a Gmail message ID from whatever the user pasted - either a
+    bare ID or a Gmail web UI link (e.g.
+    https://mail.google.com/mail/u/0/#inbox/<id>). Pure string parsing, no
+    network call: narrows down to the trailing path/fragment segment,
+    which is always where the ID lives in these URLs. Does not attempt to
+    decode Gmail's separate "Copy link" share-URL format
+    (?...&permthid=thread-f:<n>&simpl=msg-f:<n>) - that uses a different,
+    decimal ID encoding; a link in that format will fail the subsequent
+    Gmail API lookup with a clear "not found" rather than silently
+    resolving to the wrong message."""
+    ref = (raw or "").strip().rstrip("/")
+    if not ref:
+        raise ValueError("Paste a Gmail message link or ID first.")
+    for sep in ("#", "/"):
+        if sep in ref:
+            ref = ref.rsplit(sep, 1)[-1]
+    ref = ref.split("?")[0].strip()
+    if not ref:
+        raise ValueError("Couldn't find a message ID in that link.")
+    return ref
+
+
+def fetch_message_preview(creds: Credentials, message_id: str) -> dict:
+    """Metadata-only lookup for the manual thread-attach flow (see main.py's
+    /deletion/attach-thread routes) - resolves ONE specific, already-known
+    message ID the user provided (never a search or list) to the header
+    fields needed for the user to confirm this is the right email, plus its
+    thread ID. format='metadata' with an explicit header allow-list means
+    the message body is never requested or seen, here or anywhere in this
+    flow."""
+    service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+    message = service.users().messages().get(
+        userId="me", id=message_id, format="metadata", metadataHeaders=["From", "Subject", "Date"],
+    ).execute()
+    headers = {h["name"]: h["value"] for h in message.get("payload", {}).get("headers", [])}
+    return {
+        "thread_id": message["threadId"],
+        "message_id": message["id"],
+        "from": headers.get("From", ""),
+        "subject": headers.get("Subject", ""),
+        "date": headers.get("Date", ""),
+    }
+
+
 def revoke_and_forget(db: Session) -> None:
     """Revoke the token at Google (best-effort) and delete it locally either way."""
     row = db.query(OAuthToken).first()

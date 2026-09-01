@@ -71,6 +71,13 @@ class DeletionStatus:
     # terminal: polling stops once a request reaches one of them.
     ACTIVELY_MONITORED = {SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, UNKNOWN_RESPONSE}
 
+    # A request in one of these is done, one way or another - nothing more
+    # will ever change it. Used to gate actions that only make sense for a
+    # still-open request, e.g. manually attaching a confirmation-email
+    # thread (see main.py's /deletion/attach-thread routes) - there's
+    # nothing to track a response for once a request is already resolved.
+    TERMINAL = {COMPLETED, REJECTED, FAILED}
+
 
 def is_system_verified(status: str, evidence: dict | None) -> bool:
     """The status-alone check (`status in DeletionStatus.SYSTEM_VERIFIED`) is
@@ -145,12 +152,23 @@ class EventType:
     # alone; only this audit event is recorded, and the thread is retried
     # later per the backoff policy. See deletion_response_tracker.py.
     RESPONSE_CHECK_FAILED = "RESPONSE_CHECK_FAILED"
+    # The user manually associated an externally-submitted deletion request
+    # (a web form, account setting, or privacy portal Cookie Monster never
+    # sent itself) with a Gmail thread containing the company's confirmation
+    # - see main.py's /deletion/attach-thread routes and
+    # deletion_response_tracker.py's module docstring. Always source=USER:
+    # the user is the one who reviewed and approved the specific message
+    # this points to, not something Cookie Monster inferred on its own.
+    # This event, by itself, never changes deletion_status - it only makes
+    # Company.deletion_thread_id non-null so the EXISTING response tracker
+    # can take over from here.
+    THREAD_ASSOCIATED = "THREAD_ASSOCIATED"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
         COMPANY_ACKNOWLEDGED, VERIFICATION_REQUESTED, ADDITIONAL_INFO_REQUESTED,
         COMPLETION_CONFIRMED, USER_MARKED_COMPLETE, REQUEST_REJECTED, FAILED, RETRY,
-        RESPONSE_CHECK_FAILED,
+        RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED,
     }
 
 

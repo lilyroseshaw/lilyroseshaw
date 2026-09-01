@@ -196,6 +196,39 @@
         </form>
       </div>
       {% endif %}
+
+      {% set attach_eligible = response_tracking_enabled and not c.deletion_thread_id and c.deletion_status not in ("COMPLETED", "REJECTED", "FAILED") %}
+      {% set attach_pending_for_this_company = (attach_preview and attach_preview.company_id == c.id) or (attach_preview_error and attach_preview_error.company_id == c.id) %}
+      {% if attach_eligible or attach_pending_for_this_company %}
+      <div class="attach-thread-block">
+        {% if attach_preview and attach_preview.company_id == c.id %}
+        <p class="deletion-detail">Is this {{ c.name }}'s confirmation email?</p>
+        <p class="attach-preview-line"><strong>From:</strong> {{ attach_preview['from']|e }}</p>
+        <p class="attach-preview-line"><strong>Subject:</strong> {{ attach_preview.subject|e }}</p>
+        <p class="attach-preview-line"><strong>Date:</strong> {{ attach_preview.date|e }}</p>
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/attach-thread/confirm" style="display:inline">
+          <input type="hidden" name="message_id" value="{{ attach_preview.message_id }}">
+          <button type="submit" class="btn btn-secondary btn-small">Yes, attach this email</button>
+        </form>
+        <a href="/dashboard" class="btn btn-secondary btn-small">Cancel</a>
+
+        {% else %}
+        {% if attach_preview_error and attach_preview_error.company_id == c.id %}
+        <p class="deletion-detail attach-error">⚠️ {{ attach_preview_error.message }}</p>
+        {% endif %}
+        {% if attach_eligible %}
+        <details class="attach-thread-details">
+          <summary>Submitted this yourself? Attach the confirmation email</summary>
+          <p class="deletion-detail">Paste the Gmail link or message ID for {{ c.name }}'s confirmation email. Cookie Monster will show you just the sender/subject/date before attaching anything - never the message body.</p>
+          <form method="post" action="/api/companies/{{ c.id }}/deletion/attach-thread/preview">
+            <input type="text" name="gmail_ref" placeholder="Gmail link or message ID" required>
+            <button type="submit" class="btn btn-secondary btn-small">Preview</button>
+          </form>
+        </details>
+        {% endif %}
+        {% endif %}
+      </div>
+      {% endif %}
     </div>
     {% endif %}
   </div>
