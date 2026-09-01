@@ -34,6 +34,7 @@ stuck showing "Researching..." forever.
 import concurrent.futures
 import datetime
 import logging
+import threading
 
 from sqlalchemy.orm import Session
 
@@ -72,6 +73,35 @@ _RESOLVABLE_COMPANY_STATUSES = {
     DeletionStatus.NOT_STARTED, DeletionStatus.METHOD_LOOKUP, DeletionStatus.UNKNOWN,
     DeletionStatus.READY, DeletionStatus.NO_METHOD_FOUND,
 }
+
+# In-process registry of domains currently being researched - a manual
+# "Research deletion method" click and the background worker's own tick
+# (process_pending) both go through this, so a double-click or a manual
+# click overlapping a background tick for the SAME domain can never start
+# two concurrent research jobs that race to write the same DeletionRecipe
+# row. Per-domain (not global): different domains still research fully
+# concurrently, matching DELETION_RESEARCH_MAX_CONCURRENCY. In-memory only
+# - this is a single-process prototype (same accepted tradeoff as the
+# rest of this worker); a lock held past a restart isn't meaningful here.
+_in_flight_domains: set[str] = set()
+_in_flight_lock = threading.Lock()
+
+
+def _try_start_research(domain: str) -> bool:
+    """Atomically checks whether `domain` is already being researched and,
+    if not, claims it. Returns False (claims nothing) if another attempt -
+    manual or background - is already in flight for this exact domain."""
+    with _in_flight_lock:
+        if domain in _in_flight_domains:
+            return False
+        _in_flight_domains.add(domain)
+        return True
+
+
+def _finish_research(domain: str) -> None:
+    with _in_flight_lock:
+        _in_flight_domains.discard(domain)
+
 
 # The ResearchResult fields that get copied onto a DeletionRecipe when a
 # result verifies - shared between the single-item and concurrent-batch
@@ -310,8 +340,16 @@ def resolve_deletion_method(
     db: Session, company: Company, provider: DeletionResearchProvider, force: bool = False
 ) -> bool:
     """Single-company synchronous resolve - used by the dashboard's manual
-    'Research deletion method' button. Returns True if research actually ran
-    (as opposed to a cache hit)."""
+    'Research deletion method' button (always called with force=True: an
+    explicit user click is a deliberate request for a FRESH attempt right
+    now, and deliberately bypasses the freshness/retry-cooldown checks
+    below - those only ever gate the unattended, automatic path
+    (process_pending, called on its own schedule with no user watching).
+    force=False is for that automatic single-company case, e.g. a future
+    caller that wants the cache-respecting behavior.
+
+    Returns True if research actually ran (as opposed to a cache hit or a
+    duplicate-attempt no-op)."""
     recipe = get_or_create_recipe_stub(db, company.domain)
 
     if not force:
@@ -324,43 +362,57 @@ def resolve_deletion_method(
             db.commit()
             return False
 
-    # Visible immediately - a concurrent dashboard load sees "Researching..."
-    # for the duration of this call, not the previous stale state.
-    original_status = company.deletion_status
-    company.deletion_status = DeletionStatus.METHOD_LOOKUP
-    db.commit()
+    # Concurrency guard: a double-click, or a manual click landing while
+    # the background worker's own tick is already researching this exact
+    # domain, must never start a second overlapping job that could race
+    # the first one's write to this DeletionRecipe row. If one's already
+    # in flight, this call does nothing - the in-flight one will finish
+    # and update the dashboard shortly regardless of who started it.
+    if not _try_start_research(company.domain):
+        return False
+    try:
+        # Visible immediately - a concurrent dashboard load sees
+        # "Researching..." for the duration of this call, not the
+        # previous stale state.
+        original_status = company.deletion_status
+        company.deletion_status = DeletionStatus.METHOD_LOOKUP
+        db.commit()
 
-    verified, reason, extra, counted = _research_and_update_recipe(recipe, company.name, provider)
+        verified, reason, extra, counted = _research_and_update_recipe(recipe, company.name, provider)
 
-    if not counted:
-        # Budget-exhausted deferral: must NEVER count as a failed attempt -
-        # restore exactly the status this company had before, touch nothing
-        # else on the recipe, and record a distinct, non-failure audit event.
-        company.deletion_status = original_status
+        if not counted:
+            # Budget-exhausted deferral: must NEVER count as a failed
+            # attempt - restore exactly the status this company had
+            # before, touch nothing else on the recipe, and record a
+            # distinct, non-failure audit event.
+            company.deletion_status = original_status
+            record_event(
+                db, company.id, EventType.RESEARCH_DEFERRED,
+                evidence={"domain": recipe.domain, "reason": reason},
+            )
+            db.commit()
+            if reason == ResearchFailureReason.BUDGET_EXHAUSTED:
+                _research_log.info(
+                    "Brave Search daily budget exhausted (limit=%d/day) - deferring research for %s, "
+                    "no attempt counted",
+                    config.BRAVE_SEARCH_DAILY_QUERY_BUDGET, recipe.domain,
+                )
+            return True
+
+        apply_recipe_to_company(company, recipe)
         record_event(
-            db, company.id, EventType.RESEARCH_DEFERRED,
-            evidence={"domain": recipe.domain, "reason": reason},
+            db, company.id,
+            EventType.METHOD_DISCOVERED if verified else EventType.RESEARCH_FAILED,
+            evidence=(
+                {"domain": recipe.domain, "confidence": recipe.confidence, "source_url": recipe.source_url}
+                if verified else _failure_evidence(recipe, reason, extra)
+            ),
+            recipe_id=recipe.id, recipe_version=recipe.recipe_version,
         )
         db.commit()
-        if reason == ResearchFailureReason.BUDGET_EXHAUSTED:
-            _research_log.info(
-                "Brave Search daily budget exhausted (limit=%d/day) - deferring research for %s, no attempt counted",
-                config.BRAVE_SEARCH_DAILY_QUERY_BUDGET, recipe.domain,
-            )
         return True
-
-    apply_recipe_to_company(company, recipe)
-    record_event(
-        db, company.id,
-        EventType.METHOD_DISCOVERED if verified else EventType.RESEARCH_FAILED,
-        evidence=(
-            {"domain": recipe.domain, "confidence": recipe.confidence, "source_url": recipe.source_url}
-            if verified else _failure_evidence(recipe, reason, extra)
-        ),
-        recipe_id=recipe.id, recipe_version=recipe.recipe_version,
-    )
-    db.commit()
-    return True
+    finally:
+        _finish_research(company.domain)
 
 
 def process_pending(db: Session, provider: DeletionResearchProvider, limit: int | None = None) -> int:
@@ -398,76 +450,87 @@ def process_pending(db: Session, provider: DeletionResearchProvider, limit: int 
             break
         if recipe.status == RecipeStatus.NEEDS_RESEARCH and not _retry_allowed(recipe):
             continue
+        # Claimed immediately, not just checked - a manual "Research
+        # deletion method" click for this exact domain landing between
+        # this check and the actual research call below must never start
+        # a second, overlapping job (see resolve_deletion_method).
+        # Recipes this tick can't claim are simply left for the next one.
+        if not _try_start_research(recipe.domain):
+            continue
         eligible.append(recipe)
 
     if not eligible:
         return 0
 
-    companies_by_recipe_id: dict[int, list[Company]] = {}
-    original_statuses: dict[int, str] = {}
-    for recipe in eligible:
-        companies = db.query(Company).filter(Company.domain == recipe.domain).all()
-        companies_by_recipe_id[recipe.id] = companies
-        for company in companies:
-            original_statuses[company.id] = company.deletion_status
-            company.deletion_status = DeletionStatus.METHOD_LOOKUP
-    db.commit()  # visible immediately, and never left stuck if the step below dies
+    try:
+        companies_by_recipe_id: dict[int, list[Company]] = {}
+        original_statuses: dict[int, str] = {}
+        for recipe in eligible:
+            companies = db.query(Company).filter(Company.domain == recipe.domain).all()
+            companies_by_recipe_id[recipe.id] = companies
+            for company in companies:
+                original_statuses[company.id] = company.deletion_status
+                company.deletion_status = DeletionStatus.METHOD_LOOKUP
+        db.commit()  # visible immediately, and never left stuck if the step below dies
 
-    company_names = {
-        recipe.id: (companies_by_recipe_id[recipe.id][0].name if companies_by_recipe_id[recipe.id] else recipe.domain)
-        for recipe in eligible
-    }
-    max_workers = max(1, min(config.DELETION_RESEARCH_MAX_CONCURRENCY, len(eligible)))
-    outcomes: dict[int, tuple[bool, str | None, dict]] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(_run_research_only, provider, company_names[recipe.id], recipe.domain): recipe.id
+        company_names = {
+            recipe.id: (companies_by_recipe_id[recipe.id][0].name if companies_by_recipe_id[recipe.id] else recipe.domain)
             for recipe in eligible
         }
-        for future in concurrent.futures.as_completed(futures):
-            outcomes[futures[future]] = future.result()
+        max_workers = max(1, min(config.DELETION_RESEARCH_MAX_CONCURRENCY, len(eligible)))
+        outcomes: dict[int, tuple[bool, str | None, dict]] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_run_research_only, provider, company_names[recipe.id], recipe.domain): recipe.id
+                for recipe in eligible
+            }
+            for future in concurrent.futures.as_completed(futures):
+                outcomes[futures[future]] = future.result()
 
-    processed = 0
-    deferred_count = 0
-    for recipe in eligible:
-        verified, reason, extra = outcomes[recipe.id]
-        counted = _apply_research_outcome(recipe, verified, extra, reason)
-        companies = companies_by_recipe_id[recipe.id]
+        processed = 0
+        deferred_count = 0
+        for recipe in eligible:
+            verified, reason, extra = outcomes[recipe.id]
+            counted = _apply_research_outcome(recipe, verified, extra, reason)
+            companies = companies_by_recipe_id[recipe.id]
 
-        if not counted:
-            # Budget-exhausted deferral: restore each company's exact
-            # pre-attempt status, touch nothing else on the recipe, and
-            # record a distinct, non-failure audit event - never counted
-            # toward `processed` (this attempt never really happened).
+            if not counted:
+                # Budget-exhausted deferral: restore each company's exact
+                # pre-attempt status, touch nothing else on the recipe, and
+                # record a distinct, non-failure audit event - never counted
+                # toward `processed` (this attempt never really happened).
+                for company in companies:
+                    company.deletion_status = original_statuses[company.id]
+                    record_event(
+                        db, company.id, EventType.RESEARCH_DEFERRED,
+                        evidence={"domain": recipe.domain, "reason": reason},
+                    )
+                db.commit()
+                deferred_count += 1
+                continue
+
             for company in companies:
-                company.deletion_status = original_statuses[company.id]
+                apply_recipe_to_company(company, recipe)
                 record_event(
-                    db, company.id, EventType.RESEARCH_DEFERRED,
-                    evidence={"domain": recipe.domain, "reason": reason},
+                    db, company.id,
+                    EventType.METHOD_DISCOVERED if verified else EventType.RESEARCH_FAILED,
+                    evidence=(
+                        {"domain": recipe.domain, "confidence": recipe.confidence}
+                        if verified else _failure_evidence(recipe, reason, extra)
+                    ),
+                    recipe_id=recipe.id, recipe_version=recipe.recipe_version,
                 )
             db.commit()
-            deferred_count += 1
-            continue
+            processed += 1
 
-        for company in companies:
-            apply_recipe_to_company(company, recipe)
-            record_event(
-                db, company.id,
-                EventType.METHOD_DISCOVERED if verified else EventType.RESEARCH_FAILED,
-                evidence=(
-                    {"domain": recipe.domain, "confidence": recipe.confidence}
-                    if verified else _failure_evidence(recipe, reason, extra)
-                ),
-                recipe_id=recipe.id, recipe_version=recipe.recipe_version,
+        if deferred_count:
+            _research_log.info(
+                "Brave Search daily budget exhausted (limit=%d/day) - deferred %d compan(y/ies) this tick, "
+                "no attempts counted",
+                config.BRAVE_SEARCH_DAILY_QUERY_BUDGET, deferred_count,
             )
-        db.commit()
-        processed += 1
 
-    if deferred_count:
-        _research_log.info(
-            "Brave Search daily budget exhausted (limit=%d/day) - deferred %d compan(y/ies) this tick, "
-            "no attempts counted",
-            config.BRAVE_SEARCH_DAILY_QUERY_BUDGET, deferred_count,
-        )
-
-    return processed
+        return processed
+    finally:
+        for recipe in eligible:
+            _finish_research(recipe.domain)
