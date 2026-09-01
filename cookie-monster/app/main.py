@@ -1,4 +1,6 @@
+import logging
 import secrets
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -21,6 +23,21 @@ app = FastAPI(title="Cookie Monster")
 app.add_middleware(SessionMiddleware, secret_key=config.SESSION_SECRET)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+
+# TEMPORARY diagnostic logging for the OAuth callback ("Invalid OAuth state
+# or missing code") investigation - logs booleans/hostnames only, never the
+# actual state/code/token values. Safe to remove once response tracking is
+# confirmed working end-to-end against a real Google account. Configured
+# with its own handler/level so it prints regardless of uvicorn's own
+# logging setup (uvicorn's default root log level would otherwise swallow
+# plain INFO-level messages from an unconfigured logger).
+_oauth_log = logging.getLogger("cookie_monster.oauth")
+_oauth_log.setLevel(logging.INFO)
+if not _oauth_log.handlers:
+    _oauth_handler = logging.StreamHandler()
+    _oauth_handler.setFormatter(logging.Formatter("%(asctime)s [cookie-monster-oauth] %(message)s"))
+    _oauth_log.addHandler(_oauth_handler)
+    _oauth_log.propagate = False
 
 GMAIL_SCOPE_EXPLANATION = (
     "Read-only access to Gmail message metadata only (sender, subject, date, labels). "
@@ -75,6 +92,36 @@ def index(request: Request):
     )
 
 
+def _canonical_host_redirect(request: Request) -> RedirectResponse | None:
+    """Google always sends the OAuth callback to the EXACT host baked into
+    GOOGLE_REDIRECT_URI - never to whatever host the browser happened to
+    start the flow from. If those differ (e.g. GOOGLE_REDIRECT_URI is
+    configured for 'localhost' - the .env.example default - but the app
+    was opened at '127.0.0.1'), the session cookie set while starting the
+    flow is scoped to the host the browser is on right now, and a browser
+    correctly never sends that cookie to a different host's request. The
+    callback then has no pending state and rejects it as invalid - not
+    because anything was tampered with, but because the round trip could
+    never have worked. Redirecting to the canonical host FIRST, before any
+    session state is written, means the cookie set moments later already
+    belongs to the host the callback will land on."""
+    try:
+        canonical = urlparse(config.GOOGLE_REDIRECT_URI)
+    except ValueError:
+        return None
+    if not canonical.hostname:
+        return None
+    if request.url.hostname == canonical.hostname and request.url.port == canonical.port:
+        return None
+    target = request.url.replace(scheme=canonical.scheme, hostname=canonical.hostname, port=canonical.port)
+    _oauth_log.info(
+        "oauth host mismatch: request_host=%s:%s redirect_uri_host=%s:%s path=%s - "
+        "redirecting to canonical host before starting flow",
+        request.url.hostname, request.url.port, canonical.hostname, canonical.port, request.url.path,
+    )
+    return RedirectResponse(str(target))
+
+
 def _start_oauth_flow(request: Request, flow_name: str, auth_url: str, state: str, scopes: list[str]) -> RedirectResponse:
     """Records this flow's pending (state, scopes) under its OWN key in the
     session, instead of one shared slot. Three flows (login/send/readonly)
@@ -92,6 +139,9 @@ def _start_oauth_flow(request: Request, flow_name: str, auth_url: str, state: st
 
 @app.get("/auth/login")
 def auth_login(request: Request):
+    redirect = _canonical_host_redirect(request)
+    if redirect is not None:
+        return redirect
     try:
         auth_url, state = google_oauth.get_authorization_url()
     except RuntimeError as exc:
@@ -105,6 +155,9 @@ def auth_enable_sending(request: Request):
     request emails automatically' feature. Never reached from the normal
     connect/scan flow - only from its own clearly-labeled button, after the
     user has read what gmail.send additionally grants."""
+    redirect = _canonical_host_redirect(request)
+    if redirect is not None:
+        return redirect
     db = get_session()
     try:
         try:
@@ -126,6 +179,9 @@ def auth_enable_response_tracking(request: Request):
     flow, never bundled with gmail.send - only from its own clearly-labeled
     button, after the user has read exactly what this additionally grants
     and that Cookie Monster only ever reads threads it itself started."""
+    redirect = _canonical_host_redirect(request)
+    if redirect is not None:
+        return redirect
     db = get_session()
     try:
         try:
@@ -154,6 +210,15 @@ def auth_callback(request: Request, code: str | None = None, state: str | None =
             if secrets.compare_digest(state, entry.get("state", "")):
                 matched_flow_name = flow_name
                 break
+
+    # TEMPORARY diagnostic (see module-level note near app = FastAPI(...)):
+    # booleans/hostnames/flow-names only - never the actual code/state value.
+    _oauth_log.info(
+        "oauth callback: path=%s request_host=%s:%s code_present=%s state_present=%s "
+        "pending_flow_names=%s matched_flow=%s configured_redirect_uri=%s",
+        request.url.path, request.url.hostname, request.url.port,
+        bool(code), bool(state), sorted(pending.keys()), matched_flow_name, config.GOOGLE_REDIRECT_URI,
+    )
 
     if not code or not state or matched_flow_name is None:
         raise HTTPException(status_code=400, detail="Invalid OAuth state or missing code")
