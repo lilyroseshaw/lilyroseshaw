@@ -9,6 +9,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from app import config, deletion_engine, google_oauth
 from app.aggregator import aggregate, store
 from app.db import get_session, init_db
+from app.deletion_queue import start_background_worker
+from app.deletion_research import build_default_provider
 from app.deletion_resolver import resolve_deletion_method
 from app.gmail_scan import scan_inbox
 from app.models import Company
@@ -24,10 +26,16 @@ GMAIL_SCOPE_EXPLANATION = (
     "send mail, or modify/delete/label anything in your inbox."
 )
 
+# One shared provider instance for the process - built once from .env config
+# (see deletion_research.build_default_provider). Used by both the manual
+# "Research deletion method" route and the background enrichment worker.
+_research_provider = build_default_provider()
+
 
 @app.on_event("startup")
 def on_startup():
     init_db()
+    start_background_worker(_research_provider)
 
 
 def _status_counts(db) -> dict[str, int]:
@@ -202,18 +210,38 @@ def _set_status(company_id: int, status: str):
 
 @app.post("/api/companies/{company_id}/deletion/research")
 def research_deletion_method(company_id: int):
-    """'Research deletion method' - re-checks the verified registry (only
-    the registry; never guesses). Cheap/instant, safe to click repeatedly."""
+    """'Research deletion method' - forces a fresh lookup for this one
+    company: checks the cache, and if stale/missing, actually runs the
+    research provider now. Synchronous (blocks this one request) since it's
+    a single explicit user click on a single row - the automatic background
+    path (deletion_queue.py) is what keeps scanning itself fast."""
     db = get_session()
     try:
         company = db.get(Company, company_id)
         if company is None:
             raise HTTPException(status_code=404, detail="Company not found")
-        resolve_deletion_method(company, force=True)
-        db.commit()
+        resolve_deletion_method(db, company, _research_provider, force=True)
     finally:
         db.close()
     return RedirectResponse("/dashboard", status_code=303)
+
+
+@app.get("/api/companies/{company_id}/deletion/preview")
+def preview_deletion_email(company_id: int):
+    """Returns the exact draft that would be sent for an EMAIL_REQUEST
+    company, so the confirmation modal can show the real outgoing email
+    (recipient/subject/body) before the user confirms - never just a
+    one-line description of what will happen."""
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        gmail_address = google_oauth.get_connected_address(db) or "your Gmail address"
+        draft = deletion_engine.build_email_draft(company, gmail_address)
+        return draft
+    finally:
+        db.close()
 
 
 @app.post("/api/companies/{company_id}/deletion/execute")
@@ -249,8 +277,7 @@ def mark_deletion_completed(company_id: int, evidence_note: str = Form("")):
         company = db.get(Company, company_id)
         if company is None:
             raise HTTPException(status_code=404, detail="Company not found")
-        deletion_engine.mark_user_completed(company, evidence_note)
-        db.commit()
+        deletion_engine.mark_user_completed(db, company, evidence_note)
     finally:
         db.close()
     return RedirectResponse("/dashboard", status_code=303)

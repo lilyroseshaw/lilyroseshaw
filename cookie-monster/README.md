@@ -24,28 +24,71 @@ behalf. It exists to answer one question:
    a few example subject lines).
 5. **Review** the results in a dashboard: confirm, reject, correct, merge
    duplicates, search/filter.
-6. **Resolve a deletion method** for each company automatically, from a
-   small human-curated registry (no live web research, no guessing — see
-   "Deletion requests" below).
+6. **Resolve a deletion method** for each company automatically. The first
+   time Cookie Monster (any user, any scan) ever sees a domain, it researches
+   that company's own site for an official deletion process and caches a
+   verified "recipe" — every company after that reuses the cache instantly.
+   Research runs in the background so it never slows down a scan — see
+   "How deletion-method research works" below.
 7. **Delete my data**: one button per confirmed company. What it actually
-   does depends on the company's verified method — see "Deletion requests -
-   what's really automatic" below. Nothing is ever submitted without you
-   confirming it first, and nothing is marked "submitted" without real
-   evidence that it happened.
+   does depends on the company's verified method — see "What's really
+   automatic" below. Nothing is ever submitted without you confirming it
+   first, and nothing is marked "submitted" without real evidence that it
+   happened.
 
-Privacy-policy *research beyond the curated registry* and general request
-generation for methods other than email are **not built yet** — see `TODO.md`.
+Company-response tracking (reading a company's reply to a sent deletion
+email) is **not built yet** — see `TODO.md`.
 
-## Deletion requests — what's really automatic
+## How deletion-method research works
 
-Every confirmed company gets a deletion method resolved automatically from
-`app/deletion_registry.py` — a small, human-curated list (not a live web
-scraper; see that file's docstring for why). If a company isn't in it yet,
-the dashboard shows "Deletion method not verified yet" and a "Research
-deletion method" button rather than pretending to know.
+Every confirmed company's domain is checked against `DeletionRecipe` — a
+local, shared, reusable cache table (not one row per user; see
+`app/models.py`). If a domain is already there and still fresh (see
+freshness below), it's used immediately. If not, the domain is queued
+(`METHOD_LOOKUP` — no network call yet, so scanning is never slowed down)
+and a background worker researches it shortly after:
 
-What actually happens when you click **Delete my data** depends on the
-method:
+1. **Same-domain crawl** (`app/research_crawl.py`, always on, no API key
+   needed): fetches the company's own homepage and a handful of conventional
+   paths (`/privacy`, `/ccpa`, `/privacy/requests`, etc.), looking for a
+   privacy/deletion page.
+2. **Optional search fallback** (`app/research_search.py`, Brave Search API,
+   only if `BRAVE_SEARCH_API_KEY` is set): used only when step 1 finds
+   nothing, scoped to `site:<company domain>`.
+3. **Extraction** (`app/research_extract.py`): a regex/keyword pass first
+   (deterministic, same style as the email classifier); an optional
+   Claude-assisted pass (only if `ANTHROPIC_API_KEY` is set) for messier
+   privacy-policy prose the regex pass can't confidently parse. The model is
+   used only to *locate* facts already on the page it's given — any
+   URL/email it returns is verified verbatim-present in that page's actual
+   text before being trusted at all, so it cannot invent one.
+4. **Verification** (`DeletionResearchProvider.verify_recipe`): the result's
+   source must be the company's own domain, or a third-party privacy portal
+   that a domain-verified official page explicitly linked to (that referring
+   page is kept as evidence). Anything else is rejected outright, and the
+   recipe is marked `NEEDS_RESEARCH` rather than guessed.
+
+**No search/LLM key configured?** Cookie Monster still works — the
+same-domain crawl and regex extraction run with zero external services and
+zero cost, just with lower coverage. Companies it can't resolve show
+"Deletion method not verified yet" with a manual "Research deletion method"
+retry, never a fabricated answer.
+
+**Freshness:** a verified recipe is trusted for `DELETION_RECIPE_FRESHNESS_DAYS`
+(default 150) before being re-researched; a company research couldn't
+verify gets a `DELETION_RECIPE_RETRY_COOLDOWN_DAYS` (default 7) cooldown
+before being retried, so a hard-to-verify company isn't re-hit constantly.
+A failed *re-check* of an already-verified recipe never destroys the
+last-known-good data — it stays usable and is retried at the next cycle.
+
+**Seeds:** `app/deletion_seeds.py` carries over the two entries this project
+already had (Lyft, Edikted) as a starting point, loaded once at startup.
+They are not the mechanism — everything past them is expected to come from
+the research pipeline above, not from hand-editing source code.
+
+## What's really automatic when you click "Delete my data"
+
+What actually happens depends on the method:
 
 - **`EMAIL_REQUEST`**: Cookie Monster always drafts the request. It only
   **sends** it for you if you've completed a *separate*, explicitly-labeled
@@ -57,18 +100,21 @@ method:
   safety rules forbid (see Part 10 of the design brief / Security
   considerations below). Cookie Monster deep-links you to the company's
   official page; you complete it, then tell Cookie Monster it's done.
-- **`API`**: wired in the state machine for completeness, but no registry
-  entry currently has a real, documented deletion API, so this path is
-  inert today. It will never fabricate one.
+- **`API`**: wired in the state machine for completeness, but no recipe
+  currently has a real, documented deletion API, so this path is inert
+  today. It will never fabricate one.
 - **`UNKNOWN`**: nothing is ever submitted.
 
 **Status is never faked.** `SUBMITTED` is reserved for cases Cookie Monster
-has real evidence for (a Gmail message ID from an actual send). Completing
-a web form or emailing a company yourself and telling Cookie Monster so is
-recorded as `COMPLETED` and visibly labeled "marked by you" — that
-distinction is deliberate, not a bug. Clicking "Delete my data" again after
-a request already has an outcome shows a warning instead of silently
-resubmitting.
+has real evidence for (a Gmail message ID *and* thread ID from an actual
+send). Completing a web form or emailing a company yourself and telling
+Cookie Monster so is recorded as `COMPLETED` and visibly labeled "marked by
+you" — that distinction is deliberate, not a bug. Clicking "Delete my data"
+again after a request already has an outcome shows a warning instead of
+silently resubmitting. Every transition (method found, you confirmed, email
+sent, marked complete, failed, …) is also written to an append-only
+`deletion_events` audit log (`app/deletion_events.py`), not just the current
+status column, so what actually happened stays reconstructable later.
 
 ## Current limitations
 
@@ -84,9 +130,16 @@ resubmitting.
 - No automated privacy request submission except sending one email, and only
   when you've explicitly opted in via the separate `gmail.send` consent
   step. Nothing is ever submitted via a company's website on your behalf.
-- The deletion registry ships with exactly two entries (Lyft, Edikted,
-  carried over from this app's previous hardcoded version) plus whatever
-  you add — see `app/deletion_registry.py` for how to add more responsibly.
+- Deletion-method research quality depends on what's configured: with no
+  `BRAVE_SEARCH_API_KEY`/`ANTHROPIC_API_KEY` set, only the same-domain
+  crawl + regex extraction run — real, but lower coverage than with those
+  enabled. Either way, an unverifiable company is reported as such, never
+  guessed.
+- The background research worker (`app/deletion_queue.py`) is a single
+  in-process asyncio loop, not a real task queue — fine for one local user,
+  not for anything bigger. See `TODO.md`.
+- No company-response tracking yet (reading a company's reply to a sent
+  deletion email) — see `TODO.md` for the Gmail scope that would require.
 
 ## Setup instructions
 
@@ -139,7 +192,9 @@ cp .env.example .env
 #   - SESSION_SECRET: any random string
 ```
 
-### 4. Required environment variables
+### 4. Environment variables
+
+**Required:**
 
 | Variable | Purpose |
 |---|---|
@@ -150,6 +205,17 @@ cp .env.example .env
 | `SESSION_SECRET` | Signs the local session cookie used for OAuth CSRF state |
 | `DATABASE_PATH` | Where the local SQLite file lives (default `./data/cookie_monster.db`) |
 | `APP_HOST` / `APP_PORT` | Local bind address (default `127.0.0.1:8000`) |
+
+**Optional (deletion-method research — see `.env.example` for full descriptions):**
+
+| Variable | Purpose |
+|---|---|
+| `DELETION_RESEARCH_ENABLED` | Master switch (default `true`). `false` disables all outbound research. |
+| `BRAVE_SEARCH_API_KEY` | Enables the Tier B search fallback. Unset = same-domain crawl only. |
+| `ANTHROPIC_API_KEY` | Enables LLM-assisted extraction for messy privacy-policy pages. |
+| `DELETION_RESEARCH_LLM_MODEL` | Which Claude model to use for extraction (default `claude-haiku-4-5-20251001`). |
+| `DELETION_RECIPE_FRESHNESS_DAYS` / `DELETION_RECIPE_RETRY_COOLDOWN_DAYS` | Recipe re-check cadence. |
+| `DELETION_QUEUE_INTERVAL_SECONDS` / `DELETION_QUEUE_BATCH_SIZE` | Background worker cadence/batch size. |
 
 `.env` is gitignored. Never commit it.
 
@@ -169,10 +235,13 @@ pytest
 ```
 
 Tests cover domain extraction, the evidence classifier, per-company
-aggregation, the deletion registry/resolver/engine (including duplicate-send
-prevention and that `SUBMITTED` is never set without real evidence), and the
-SQLite migration. They run entirely offline against fixture data and an
-in-memory/temp-file database — no Gmail account or network access required.
+aggregation, the deletion recipe cache/resolver/engine/queue (including
+duplicate-send prevention, that `SUBMITTED` is never set without real
+evidence, and that a failed re-check never destroys a good recipe), the
+research pipeline (crawl/search/extract/verify, with the HTTP client and
+LLM client mocked - no real network or API calls), and the SQLite migration.
+They run entirely offline against fixture data and an in-memory/temp-file
+database — no Gmail account, search API key, or Anthropic API key required.
 
 ## Gmail OAuth scope — exactly what is requested and why
 
@@ -213,12 +282,22 @@ still requires you to click "Continue with deletion" for that specific
 company first. Declining this just means you copy/send the drafted request
 yourself, which is the default.
 
+### Not requested (yet): `gmail.readonly`
+
+A future version could track a company's *reply* to a sent deletion email
+(acknowledged / needs verification / done / rejected). Gmail's OAuth model
+has no scope that limits reads to specific threads or labels - that
+filtering can only happen in application code after a broad-enough scope is
+granted, and `gmail.metadata` cannot return body text at all, so reading a
+reply's content genuinely needs `gmail.readonly` (Google's narrowest scope
+that can). That's a materially bigger permission than anything above, so
+it's deliberately **not implemented** in this version - see `TODO.md`.
+
 ## How Gmail data is processed
 
-1. A scan runs a handful of targeted Gmail search queries (by subject
-   keywords, e.g. "welcome", "order", "receipt", "password reset") to avoid
-   pulling the entire mailbox.
-2. For each matching message ID, the app fetches **`format=metadata`** with
+1. A scan paginates message IDs from your mailbox, up to the message cap you
+   set (default 600).
+2. For each message ID, the app fetches **`format=metadata`** with
    an explicit header allowlist (`From`, `Subject`, `Date`) — never the
    message body.
 3. The classifier runs regex/keyword rules against the subject line and
@@ -247,9 +326,25 @@ deletion_method, deletion_action_capability, deletion_status,
 deletion_url, deletion_email, deletion_instructions,
 deletion_verified, deletion_source_url, deletion_last_checked,
 deletion_requested_at, deletion_completed_at, deletion_error,
+deletion_thread_id (Gmail thread ID, only for a sent email request -
+  unused until a future response-tracking phase),
 deletion_evidence (JSON - message IDs, timestamps, confirmation
 references, or a short user-typed note; never credentials, tokens,
 or third-party account data)
+```
+
+Plus two shared tables, independent of any one company:
+
+```
+deletion_recipes - the reusable "how does this domain handle deletion"
+  cache: domain, method, url, email, login/verification flags,
+  known consequences, source_url, confidence, status, origin,
+  recipe_version, verified_at, expires_at, research_attempts
+
+deletion_events - an append-only audit log of what actually happened
+  per company (method discovered, you confirmed, email sent, marked
+  complete, failed, ...), each with a timestamp and safe evidence -
+  never just the current status column
 ```
 
 Plus one encrypted OAuth refresh token (Fernet-encrypted with
@@ -262,15 +357,23 @@ just draft) — no separate secret is stored for it.
 full header sets, message IDs (beyond the duration of one scan, in memory
 only), sender email addresses, names, order numbers, shipping addresses,
 payment details, third-party account passwords, or any other content
-beyond the Subject/From/Date headers of matched messages.
+beyond the Subject/From/Date headers of matched messages. Deletion-method
+research works the same way: fetched web pages (HTML, full text) are held
+in memory only for the duration of one research attempt and discarded -
+only the extracted, verified facts (method/url/email/etc.) land in
+`deletion_recipes`.
 
 ### Delete all imported data
 
 The dashboard has a **"Delete all imported data"** button
-(`POST /api/delete-all`) that wipes the `companies` table entirely. It does
-not affect your Gmail connection — use **Disconnect Gmail**
-(`POST /auth/disconnect`) separately to revoke and delete the stored OAuth
-token (this also attempts to revoke the token at Google directly).
+(`POST /api/delete-all`) that wipes the `companies` table (and, with it,
+that company's deletion request history) entirely. It does not affect your
+Gmail connection — use **Disconnect Gmail** (`POST /auth/disconnect`)
+separately to revoke and delete the stored OAuth token (this also attempts
+to revoke the token at Google directly). It also does not clear
+`deletion_recipes` - that cache is deliberately independent of any one
+company/user (see "How deletion-method research works" above); delete the
+database file entirely (below) if you want a completely clean slate.
 
 To wipe everything including the database file itself:
 
@@ -288,8 +391,16 @@ rm -f data/cookie_monster.db
 - `data/` and `.env` are gitignored; double-check `git status` before
   committing if you fork/modify this.
 - `tldextract` is configured with `suffix_list_urls=()` so it never makes a
-  network call of its own — this app's only outbound network traffic is to
-  Google's OAuth/Gmail API endpoints.
+  network call of its own. This app's outbound network traffic is: Google's
+  OAuth/Gmail API endpoints, and (only if `DELETION_RESEARCH_ENABLED=true`,
+  the default) public pages on companies' own domains during deletion-method
+  research, plus Brave Search / Anthropic's API if you've configured those
+  keys. Set `DELETION_RESEARCH_ENABLED=false` to disable that third category
+  entirely.
+- The research crawler (`app/research_fetch.py`) only fetches public,
+  unauthenticated pages, respects `robots.txt`, and identifies itself with
+  an honest User-Agent - it never logs in, never touches an authenticated
+  page, and times out/backs off rather than hammering a site.
 - The classifier can misclassify senders. Nothing is auto-confirmed;
   everything requires explicit human review in the dashboard.
 - This prototype does not implement multi-user isolation, rate limiting, or

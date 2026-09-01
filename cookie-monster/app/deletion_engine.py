@@ -12,19 +12,22 @@ What "execute" means depends on deletion_method:
   is exactly what this project's own safety rules forbid). Returns the
   official URL and sets USER_ACTION_REQUIRED; the user completes it and
   self-reports back via mark_user_completed().
-- API: wired for completeness; inert until a registry entry actually sets
+- API: wired for completeness; inert until a recipe actually sets
   method=API with a real, documented endpoint (none do yet).
 - UNKNOWN: never submits anything.
 
 Nothing here ever marks DeletionStatus.SUBMITTED without concrete evidence
 (a Gmail message id, an HTTP response, etc.) - see DeletionStatus.SYSTEM_VERIFIED.
+Every transition is also recorded in the deletion_events audit log
+(app/deletion_events.py), not just the current status column.
 """
 import datetime
 
 from sqlalchemy.orm import Session
 
 from app import google_oauth
-from app.deletion_constants import DeletionMethod, DeletionStatus
+from app.deletion_constants import DeletionMethod, DeletionStatus, EventSource, EventType
+from app.deletion_events import record_event
 from app.models import Company, OAuthToken
 
 ALREADY_DONE_STATUSES = {DeletionStatus.SUBMITTED, DeletionStatus.COMPLETED}
@@ -71,6 +74,10 @@ def execute_deletion(db: Session, company: Company, force_resend: bool = False) 
         raise DuplicateRequestWarning(company)
 
     now = datetime.datetime.utcnow()
+    record_event(
+        db, company.id, EventType.USER_CONFIRMED, source=EventSource.USER,
+        evidence={"method": company.deletion_method, "forced_resend": force_resend},
+    )
 
     if company.deletion_method == DeletionMethod.EMAIL_REQUEST:
         _execute_email_request(db, company, now)
@@ -80,13 +87,14 @@ def execute_deletion(db: Session, company: Company, force_resend: bool = False) 
         DeletionMethod.ACCOUNT_SETTING,
         DeletionMethod.MANUAL,
     ):
-        _route_to_user_action(company, now)
+        _route_to_user_action(db, company, now)
     elif company.deletion_method == DeletionMethod.API:
-        # No registry entry sets method=API with a real endpoint yet - this
-        # branch exists so the state machine is complete, but is unreachable
-        # in practice today. Never fabricate an API call.
+        # No recipe sets method=API with a real endpoint yet - this branch
+        # exists so the state machine is complete, but is unreachable in
+        # practice today. Never fabricate an API call.
         company.deletion_status = DeletionStatus.FAILED
         company.deletion_error = "No supported API integration exists for this company yet."
+        record_event(db, company.id, EventType.FAILED, evidence={"reason": company.deletion_error})
     else:
         company.deletion_status = DeletionStatus.UNKNOWN
         company.deletion_error = "Deletion method not verified yet."
@@ -124,21 +132,31 @@ def _execute_email_request(db: Session, company: Company, now: datetime.datetime
     except Exception as exc:  # noqa: BLE001 - any send failure lands here, never silently
         company.deletion_status = DeletionStatus.FAILED
         company.deletion_error = f"Failed to send deletion request email: {exc}"
+        record_event(db, company.id, EventType.FAILED, evidence={"reason": str(exc)[:300]})
         return
+
+    message_id = response.get("id")
+    thread_id = response.get("threadId")
 
     company.deletion_status = DeletionStatus.SUBMITTED
     company.deletion_requested_at = now
     company.deletion_error = None
+    company.deletion_thread_id = thread_id
     company.deletion_evidence = {
         "type": "gmail_send",
-        "gmail_message_id": response.get("id"),
+        "gmail_message_id": message_id,
+        "gmail_thread_id": thread_id,
         "sent_to": draft["to"],
         "subject": draft["subject"],
         "sent_at": now.isoformat(),
     }
+    record_event(
+        db, company.id, EventType.EMAIL_SENT,
+        evidence={"gmail_message_id": message_id, "gmail_thread_id": thread_id, "sent_to": draft["to"]},
+    )
 
 
-def _route_to_user_action(company: Company, now: datetime.datetime) -> None:
+def _route_to_user_action(db: Session, company: Company, now: datetime.datetime) -> None:
     if not company.deletion_url:
         company.deletion_status = DeletionStatus.UNKNOWN
         company.deletion_error = "No verified deletion page is on file for this company."
@@ -146,19 +164,26 @@ def _route_to_user_action(company: Company, now: datetime.datetime) -> None:
     company.deletion_status = DeletionStatus.USER_ACTION_REQUIRED
     if company.deletion_requested_at is None:
         company.deletion_requested_at = now
+    record_event(db, company.id, EventType.PORTAL_OPENED, evidence={"url": company.deletion_url})
 
 
-def mark_user_completed(company: Company, evidence_note: str | None = None) -> Company:
+def mark_user_completed(db: Session, company: Company, evidence_note: str | None = None) -> Company:
     """Self-report path: the user did the WEB_FORM/ACCOUNT_SETTING/manual-email
     step themselves outside Cookie Monster and is telling us it's done. This
     is recorded as COMPLETED (self-reported), never as SUBMITTED - Cookie
-    Monster has no independent proof, and Part 7 requires we never claim
-    otherwise."""
+    Monster has no independent proof, and this project's own rules require
+    we never claim otherwise."""
     company.deletion_status = DeletionStatus.COMPLETED
     company.deletion_completed_at = datetime.datetime.utcnow()
+    note = (evidence_note or "").strip()[:300] or None
     company.deletion_evidence = {
         "type": "user_reported",
-        "note": (evidence_note or "").strip()[:300] or None,
+        "note": note,
         "reported_at": company.deletion_completed_at.isoformat(),
     }
+    record_event(
+        db, company.id, EventType.USER_MARKED_COMPLETE, source=EventSource.USER,
+        evidence={"note": note} if note else {},
+    )
+    db.commit()
     return company

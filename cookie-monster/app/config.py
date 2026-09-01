@@ -33,6 +33,42 @@ DATABASE_PATH = os.environ.get("DATABASE_PATH", "./data/cookie_monster.db")
 APP_HOST = os.environ.get("APP_HOST", "127.0.0.1")
 APP_PORT = int(os.environ.get("APP_PORT", "8000"))
 
+# --- Deletion-method research (see app/deletion_research.py) ---
+
+# Master switch. False = use NullResearchProvider (no outbound requests at
+# all, everything unresolved lands in NEEDS_RESEARCH). True = use
+# WebResearchProvider - Tier A (same-domain crawl) is always active when
+# this is true; Tier B (search) and Pass 2 (LLM extraction) below are each
+# independently optional and only activate if their own key is set.
+DELETION_RESEARCH_ENABLED = os.environ.get("DELETION_RESEARCH_ENABLED", "true").lower() == "true"
+
+# Tier B: optional search-engine fallback for companies the same-domain
+# crawl can't find anything for. Unset = Tier A only.
+BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
+
+# Pass 2: optional LLM-assisted extraction for privacy pages the regex/
+# keyword pass can't confidently parse. Unset = Pass 1 (regex) only.
+# Never used to invent a URL/email - see research_extract.py's verbatim
+# containment check.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+DELETION_RESEARCH_LLM_MODEL = os.environ.get("DELETION_RESEARCH_LLM_MODEL", "claude-haiku-4-5-20251001")
+
+# How long a verified recipe is trusted before it's re-queued for research.
+DELETION_RECIPE_FRESHNESS_DAYS = int(os.environ.get("DELETION_RECIPE_FRESHNESS_DAYS", "150"))
+# How long to wait before retrying a company whose last research attempt
+# came back NEEDS_RESEARCH, so a hard-to-verify company isn't re-hit every scan.
+DELETION_RECIPE_RETRY_COOLDOWN_DAYS = int(os.environ.get("DELETION_RECIPE_RETRY_COOLDOWN_DAYS", "7"))
+
+# Background enrichment queue (app/deletion_queue.py) - a single-process
+# asyncio poller, not a real task queue. Good enough for one local user;
+# see TODO.md for what a production version would need instead.
+DELETION_QUEUE_INTERVAL_SECONDS = int(os.environ.get("DELETION_QUEUE_INTERVAL_SECONDS", "60"))
+DELETION_QUEUE_BATCH_SIZE = int(os.environ.get("DELETION_QUEUE_BATCH_SIZE", "3"))
+
+# Politeness limits for the crawler/fetcher - never hammer a company's site.
+RESEARCH_HTTP_TIMEOUT_SECONDS = float(os.environ.get("RESEARCH_HTTP_TIMEOUT_SECONDS", "10"))
+RESEARCH_MAX_PAGES_PER_COMPANY = int(os.environ.get("RESEARCH_MAX_PAGES_PER_COMPANY", "5"))
+
 
 def require_google_credentials() -> None:
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:

@@ -114,7 +114,8 @@
         <button type="button" class="btn btn-delete delete-my-data-btn"
           data-id="{{ c.id }}"
           data-name="{{ c.name|e }}"
-          data-action="{% if c.deletion_method == 'EMAIL_REQUEST' %}{% if send_enabled %}Cookie Monster will send a deletion request email to {{ c.deletion_email or ('privacy@' ~ c.domain) }} from your connected Gmail address.{% else %}Cookie Monster will prepare a deletion request email for {{ c.deletion_email or ('privacy@' ~ c.domain) }} for you to send yourself — automatic sending isn't enabled.{% endif %}{% else %}Cookie Monster will take you to {{ c.name|e }}'s official deletion page. Completing the request there is up to you — Cookie Monster can't do it on your behalf.{% endif %}"
+          data-method="{{ c.deletion_method }}"
+          data-action="{% if c.deletion_method == 'EMAIL_REQUEST' %}{% if send_enabled %}Cookie Monster will send the email below from your connected Gmail address.{% else %}Cookie Monster will prepare the email below for you to send yourself — automatic sending isn't enabled.{% endif %}{% else %}Cookie Monster will take you to {{ c.name|e }}'s official deletion page. Completing the request there is up to you — Cookie Monster can't do it on your behalf.{% endif %}"
           data-details="{{ (c.deletion_instructions or '')|e }}"
         >🗑️ Delete my data</button>
 
@@ -133,7 +134,11 @@
         </form>
 
       {% elif c.deletion_status == "SUBMITTED" %}
+        {% if c.deletion_evidence and c.deletion_evidence.type == "user_reported" %}
+        <p class="deletion-line deletion-done">📨 Marked submitted by you{% if c.deletion_requested_at %} {{ c.deletion_requested_at.strftime('%b %d, %Y') }}{% endif %} (before Cookie Monster tracked send evidence).</p>
+        {% else %}
         <p class="deletion-line deletion-done">📨 Deletion requested{% if c.deletion_requested_at %} {{ c.deletion_requested_at.strftime('%b %d, %Y') }}{% endif %}. Awaiting confirmation.</p>
+        {% endif %}
 
       {% elif c.deletion_status == "COMPLETED" %}
         <p class="deletion-line deletion-done">✅ Deletion completed{% if c.deletion_completed_at %} {{ c.deletion_completed_at.strftime('%b %d, %Y') }}{% endif %}{% if c.deletion_evidence and c.deletion_evidence.type == "user_reported" %} (marked by you){% endif %}</p>
@@ -141,7 +146,7 @@
       {% elif c.deletion_status == "FAILED" %}
         <p class="deletion-line deletion-failed">⚠️ Deletion attempt failed{% if c.deletion_error %}: {{ c.deletion_error }}{% endif %}</p>
         <button type="button" class="btn btn-secondary btn-small delete-my-data-btn"
-          data-id="{{ c.id }}" data-name="{{ c.name|e }}"
+          data-id="{{ c.id }}" data-name="{{ c.name|e }}" data-method="{{ c.deletion_method }}"
           data-action="Cookie Monster will try this deletion request again."
           data-details="{{ (c.deletion_instructions or '')|e }}"
         >Try again</button>
@@ -170,6 +175,11 @@
     <h3 id="deletion-modal-title">Delete my data</h3>
     <p id="deletion-modal-action"></p>
     <p id="deletion-modal-details" class="deletion-detail"></p>
+    <div id="deletion-modal-email" class="deletion-email-preview" hidden>
+      <p><strong>To:</strong> <span id="deletion-modal-email-to"></span></p>
+      <p><strong>Subject:</strong> <span id="deletion-modal-email-subject"></span></p>
+      <pre id="deletion-modal-email-body"></pre>
+    </div>
     <p class="deletion-modal-caution">Some companies require identity verification before completing a deletion request. Cookie Monster will never bypass CAPTCHA, MFA, or login requirements on your behalf.</p>
     <form method="post" id="deletion-modal-form">
       <div class="deletion-modal-actions">

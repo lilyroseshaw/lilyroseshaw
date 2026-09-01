@@ -98,7 +98,7 @@ def normalize_domain(raw_domain: str) -> str | None:
     """Collapses any subdomain to its registrable root, e.g.
     mail.notifications.amazon.com -> amazon.com. Used both when classifying
     messages and when looking up a company's deletion provider, so the two
-    never drift apart (see deletion_registry.py)."""
+    never drift apart (see deletion_seeds.py / deletion_research.py)."""
     ext = _tld_extract((raw_domain or "").lower().strip())
     if not ext.domain or not ext.suffix:
         return None

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from sqlalchemy.orm import Session
 
 from app.classifier import Classification
-from app.deletion_resolver import resolve_many
+from app.deletion_resolver import enqueue_pending
 from app.models import Company
 
 STRONG_EVIDENCE = {
@@ -132,9 +132,11 @@ def store(db: Session, aggregated: dict[str, _DomainAgg]) -> dict[str, int]:
             touched_companies.append(existing)
             updated += 1
 
-    # Registry-lookup-only, no network calls - safe to run inline without
-    # slowing the scan down. Already-resolved companies are skipped (cached).
-    resolve_many(touched_companies)
+    # DB-only, no network calls - safe to run inline without slowing the scan
+    # down. This only applies whatever DeletionRecipe currently exists
+    # (possibly a bare not-yet-researched stub); actual research happens in
+    # the background - see deletion_queue.py / app.main's startup hook.
+    enqueue_pending(db, touched_companies)
 
     db.commit()
     return {"created": created, "updated": updated}

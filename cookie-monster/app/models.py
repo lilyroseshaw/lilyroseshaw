@@ -18,11 +18,19 @@ references) - never credentials, tokens, or third-party account data.
 """
 import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
-from app.deletion_constants import ActionCapability, DeletionMethod, DeletionStatus
+from app.deletion_constants import (
+    ActionCapability,
+    DeletionMethod,
+    DeletionStatus,
+    EventSource,
+    EventType,
+    RecipeOrigin,
+    RecipeStatus,
+)
 
 
 class Company(Base):
@@ -67,10 +75,11 @@ class Company(Base):
     deletion_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     deletion_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     deletion_instructions: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-    # True only if sourced from a human-reviewed registry entry - never set by
-    # unattended inference. See deletion_registry.py / deletion_resolver.py.
+    # True only when copied from a DeletionRecipe with status=VERIFIED (either a
+    # seed entry or one that passed DeletionResearchProvider.verify_recipe) -
+    # never set by unattended inference. See deletion_resolver.py.
     deletion_verified: Mapped[bool] = mapped_column(default=False)
-    # The official page a human confirmed this deletion method against.
+    # The official page the applied recipe was verified against.
     deletion_source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     deletion_last_checked: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -80,6 +89,84 @@ class Company(Base):
     # references, timestamps. Never credentials, tokens, or third-party account data.
     deletion_evidence: Mapped[dict] = mapped_column(JSON, default=dict)
     deletion_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Gmail thread ID for a sent EMAIL_REQUEST - captured now so a future
+    # response-tracker (Phase 2) can monitor only this specific thread,
+    # never the general inbox. Unused until that phase exists.
+    deletion_thread_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class DeletionRecipe(Base):
+    """The shared, reusable cache/knowledge base: 'how does this domain handle
+    deletion requests'. One row per normalized domain, independent of any one
+    Company row or user - populated once (by a seed, research, or manual
+    entry) and reused by every company/scan that ever hits that domain again.
+    This is the thing that's supposed to grow automatically as Cookie Monster
+    encounters new companies - see deletion_resolver.py.
+    """
+
+    __tablename__ = "deletion_recipes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    canonical_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    method: Mapped[str] = mapped_column(String(32), default=DeletionMethod.UNKNOWN)
+    action_capability: Mapped[str] = mapped_column(String(32), default=ActionCapability.UNKNOWN)
+
+    url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    login_required: Mapped[bool | None] = mapped_column(nullable=True)
+    email_verification_expected: Mapped[bool | None] = mapped_column(nullable=True)
+    identity_verification_expected: Mapped[bool | None] = mapped_column(nullable=True)
+    deletes_account: Mapped[bool | None] = mapped_column(nullable=True)
+
+    known_consequences: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    instructions: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    required_subject: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    required_request_fields: Mapped[list] = mapped_column(JSON, default=list)  # e.g. ["full_name", "account_email"]
+    jurisdiction_notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    # The definitive page this recipe was verified against.
+    source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # If source_url is a third-party portal, the company's own official page
+    # that linked to it - required evidence for accepting a third-party portal.
+    referring_official_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_type: Mapped[str | None] = mapped_column(String(50), nullable=True)  # SourceType.*
+
+    confidence: Mapped[str] = mapped_column(String(16), default="low")  # high | medium | low
+    status: Mapped[str] = mapped_column(String(16), default=RecipeStatus.UNKNOWN)  # RecipeStatus.*
+    origin: Mapped[str] = mapped_column(String(16), default=RecipeOrigin.RESEARCHED)  # RecipeOrigin.*
+    recipe_version: Mapped[int] = mapped_column(Integer, default=1)
+
+    verified_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    research_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_attempted_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
+    )
+
+
+class DeletionEvent(Base):
+    """Append-only audit trail of what actually happened for a deletion
+    request, so status is never the only record - see deletion_events.py.
+    """
+
+    __tablename__ = "deletion_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(32))  # EventType.*
+    source: Mapped[str] = mapped_column(String(16), default=EventSource.SYSTEM)  # EventSource.*
+    occurred_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    # Safe, non-secret evidence only - same rule as Company.deletion_evidence.
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    recipe_id: Mapped[int | None] = mapped_column(ForeignKey("deletion_recipes.id"), nullable=True)
+    recipe_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
 
 
 class OAuthToken(Base):

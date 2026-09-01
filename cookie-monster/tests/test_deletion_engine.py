@@ -160,14 +160,16 @@ def test_only_confirmed_companies_can_be_executed(db):
 
 # --- Self-report path: COMPLETED, never SUBMITTED ---
 
-def test_mark_user_completed_is_completed_not_submitted():
+def test_mark_user_completed_is_completed_not_submitted(db):
     company = Company(
         name="Test Co", domain="testco.com", relationship_type="transactional", status="confirmed",
         confidence="high", evidence_count=1, evidence_types=[], example_subjects=[], detection_reasons=[],
         first_seen=datetime.datetime(2022, 1, 1), last_seen=datetime.datetime(2022, 1, 1),
         deletion_status=DeletionStatus.USER_ACTION_REQUIRED,
     )
-    deletion_engine.mark_user_completed(company, "Confirmation #4821")
+    db.add(company)
+    db.commit()
+    deletion_engine.mark_user_completed(db, company, "Confirmation #4821")
     assert company.deletion_status == DeletionStatus.COMPLETED
     assert company.deletion_status not in DeletionStatus.SYSTEM_VERIFIED
     assert company.deletion_evidence["type"] == "user_reported"

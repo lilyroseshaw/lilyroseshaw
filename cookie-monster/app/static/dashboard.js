@@ -35,6 +35,10 @@
   const titleEl = document.getElementById("deletion-modal-title");
   const actionEl = document.getElementById("deletion-modal-action");
   const detailsEl = document.getElementById("deletion-modal-details");
+  const emailPreviewEl = document.getElementById("deletion-modal-email");
+  const emailToEl = document.getElementById("deletion-modal-email-to");
+  const emailSubjectEl = document.getElementById("deletion-modal-email-subject");
+  const emailBodyEl = document.getElementById("deletion-modal-email-body");
   const form = document.getElementById("deletion-modal-form");
   const cancelBtn = document.getElementById("deletion-modal-cancel");
 
@@ -45,7 +49,23 @@
     detailsEl.textContent = btn.dataset.details || "";
     detailsEl.hidden = !btn.dataset.details;
     form.action = "/api/companies/" + btn.dataset.id + "/deletion/execute";
+    emailPreviewEl.hidden = true;
     modal.hidden = false;
+
+    // For an email-based request, show the ACTUAL outgoing email - not
+    // just a description of what will happen - before the user confirms.
+    if (btn.dataset.method === "EMAIL_REQUEST") {
+      fetch("/api/companies/" + btn.dataset.id + "/deletion/preview")
+        .then((resp) => (resp.ok ? resp.json() : null))
+        .then((draft) => {
+          if (!draft || modal.hidden) return;
+          emailToEl.textContent = draft.to || "";
+          emailSubjectEl.textContent = draft.subject || "";
+          emailBodyEl.textContent = draft.body || "";
+          emailPreviewEl.hidden = false;
+        })
+        .catch(() => {});
+    }
   }
 
   function closeModal() {

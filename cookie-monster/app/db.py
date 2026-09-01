@@ -21,9 +21,21 @@ class Base(DeclarativeBase):
 
 def init_db() -> None:
     from app import migrations, models  # noqa: F401  (register models on Base.metadata)
+    from app.deletion_seeds import seed_known_recipes
 
-    migrations.migrate(engine, config.DATABASE_PATH)
+    # create_all() only creates *missing tables* (e.g. deletion_recipes/
+    # deletion_events on an upgrade) - it never alters an existing table, so
+    # it's always safe to run before migrate(), which handles altering the
+    # existing `companies` table and needs deletion_recipes to already exist
+    # for its backfill step.
     Base.metadata.create_all(bind=engine)
+    migrations.migrate(engine, config.DATABASE_PATH)
+
+    session = SessionLocal()
+    try:
+        seed_known_recipes(session)  # idempotent - never overwrites a researched/manual recipe
+    finally:
+        session.close()
 
 
 def get_session() -> Session:
