@@ -902,6 +902,18 @@ header::after {
   backdrop-filter: blur(2px);
 }
 
+/* The browser's own [hidden] rule (display: none) has the SAME
+   specificity as .deletion-modal's own "display: flex" above, and author
+   rules always win ties against the UA stylesheet - so without this,
+   .deletion-modal { display: flex } keeps the modal visible even while
+   its `hidden` attribute is set/toggled by dashboard.js. This is what
+   made the modal appear on every dashboard load regardless of any actual
+   click, and made Cancel look like it did nothing (it DID clear the
+   `hidden` attribute correctly - the CSS just never reacted to it). */
+.deletion-modal[hidden] {
+  display: none;
+}
+
 .deletion-modal-card {
   width: min(480px, 100%);
 

@@ -16,3 +16,9 @@ lxml==5.3.0
 anthropic==0.39.0
 pytest==8.3.3
 pytest-asyncio==0.24.0
+
+# Optional: only needed to run tests/test_dashboard_modal_ui.py, a
+# real-browser regression suite for the "Delete my data" modal. Every
+# other test runs without it. To enable:
+#   pip install playwright && playwright install chromium
+playwright==1.62.0
