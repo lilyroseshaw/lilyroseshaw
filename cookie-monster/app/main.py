@@ -306,6 +306,11 @@ def run_scan(max_messages: int = Form(600)):
 _FAILURE_REASON_LABELS = {
     ResearchFailureReason.NO_OFFICIAL_SOURCE_FOUND: "Couldn't find an official deletion/privacy page on their site",
     ResearchFailureReason.TECHNICAL_ERROR: "A technical error interrupted the last attempt",
+    # Deliberately NOT phrased as "no deletion method exists" - a source
+    # was found, on the company's own domain, we just couldn't confirm it
+    # ourselves. See product decision: never imply a company doesn't
+    # support deletion just because automatic verification didn't succeed.
+    ResearchFailureReason.SOURCE_BLOCKED: "Possible official privacy route found — automatic verification blocked",
 }
 
 
@@ -334,6 +339,7 @@ def _research_info_for_companies(db, companies: list[Company]) -> dict[int, dict
             next_retry_at = recipe.last_attempted_at + datetime.timedelta(days=config.DELETION_RECIPE_RETRY_COOLDOWN_DAYS)
 
         failure_reason_label = None
+        blocked_url = None
         last_event = (
             db.query(DeletionEvent)
             .filter(DeletionEvent.company_id == company.id, DeletionEvent.event_type == EventType.RESEARCH_FAILED)
@@ -341,14 +347,20 @@ def _research_info_for_companies(db, companies: list[Company]) -> dict[int, dict
             .first()
         )
         if last_event:
-            reason = (last_event.evidence or {}).get("reason")
+            evidence = last_event.evidence or {}
+            reason = evidence.get("reason")
             failure_reason_label = _FAILURE_REASON_LABELS.get(reason)
+            # A manual-review lead - the specific URL Cookie Monster found
+            # but couldn't independently confirm - never a body/secret,
+            # just the URL itself.
+            blocked_url = evidence.get("blocked_url") or evidence.get("unverified_lead_url")
 
         info[company.id] = {
             "attempts": recipe.research_attempts,
             "last_attempted_at": recipe.last_attempted_at,
             "next_retry_at": next_retry_at,
             "failure_reason_label": failure_reason_label,
+            "blocked_url": blocked_url,
         }
     return info
 

@@ -45,6 +45,17 @@ DELETION_RESEARCH_ENABLED = os.environ.get("DELETION_RESEARCH_ENABLED", "true").
 # Tier B: optional search-engine fallback for companies the same-domain
 # crawl can't find anything for. Unset = Tier A only.
 BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
+# Several distinct, narrowly-scoped query angles are tried per triggered
+# Tier B attempt (deletion-page / data-rights-page / privacy-email), not
+# one generic query - see research_search.brave_query_patterns().
+BRAVE_SEARCH_QUERIES_PER_ATTEMPT = int(os.environ.get("BRAVE_SEARCH_QUERIES_PER_ATTEMPT", "3"))
+# Hard daily cap on Brave queries (a paid API) - once exhausted, the
+# worker stops making Brave requests for the rest of the day. Hitting
+# this never counts as a failed research attempt for a company; that
+# company's research is simply deferred until the budget is available
+# again. Default is a conservative development budget - raise it once
+# you have a sense of real usage.
+BRAVE_SEARCH_DAILY_QUERY_BUDGET = int(os.environ.get("BRAVE_SEARCH_DAILY_QUERY_BUDGET", "100"))
 
 # Pass 2: optional LLM-assisted extraction for privacy pages the regex/
 # keyword pass can't confidently parse. Unset = Pass 1 (regex) only.

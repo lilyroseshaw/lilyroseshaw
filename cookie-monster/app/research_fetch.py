@@ -99,23 +99,35 @@ class PageFetcher:
         """Returns None (never raises) on anything that isn't a clean, allowed,
         HTML 200 response - callers treat that as 'this page doesn't count as
         evidence', never as an error to propagate."""
+        page, _status = self.fetch_with_status(url, domain)
+        return page
+
+    def fetch_with_status(self, url: str, domain: str) -> tuple["PageContent | None", int | None]:
+        """Same as fetch(), but also returns the raw HTTP status code when a
+        response was actually received - even on failure. Needed to tell a
+        BLOCKING response (401/403/429 - the site is refusing automated
+        access) apart from a genuine "not found" (404), which fetch() alone
+        can't distinguish (see deletion_research.py's Tier B trigger logic).
+        Returns (None, None) for anything that never got a real HTTP
+        response at all - a network error, or robots.txt disallowing the
+        request before it was ever made."""
         if not url.startswith("https://"):
-            return None
+            return None, None
         if not self._robots_allows(url):
-            return None
+            return None, None
         try:
             resp = self._client.get(url)
         except httpx.HTTPError:
-            return None
+            return None, None
         if resp.status_code != 200:
-            return None
+            return None, resp.status_code
         content_type = resp.headers.get("content-type", "")
         if "html" not in content_type and content_type != "":
-            return None
+            return None, resp.status_code
 
         soup = BeautifulSoup(resp.text, "lxml")
         same_domain_links, external_links = _extract_links(soup, domain, str(resp.url))
-        return PageContent(
+        page = PageContent(
             url=str(resp.url),
             domain=domain,
             status_code=resp.status_code,
@@ -124,3 +136,4 @@ class PageFetcher:
             external_links=external_links,
             mailto_links=_extract_mailto_links(soup),
         )
+        return page, resp.status_code

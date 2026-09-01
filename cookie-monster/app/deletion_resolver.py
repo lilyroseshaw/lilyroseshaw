@@ -33,6 +33,7 @@ stuck showing "Researching..." forever.
 """
 import concurrent.futures
 import datetime
+import logging
 
 from sqlalchemy.orm import Session
 
@@ -47,8 +48,20 @@ from app.deletion_constants import (
     ResearchFailureReason,
 )
 from app.deletion_events import record_event
-from app.deletion_research import DeletionResearchProvider
+from app.deletion_research import DeletionResearchProvider, SourceBlockedDiscovery, UnverifiedPortalDiscovery
 from app.models import Company, DeletionRecipe
+from app.research_search import BraveBudgetExhausted
+
+# Explicit handler/level, matching main.py/deletion_queue.py's pattern, so
+# budget-exhaustion deferrals are actually visible - "log/query-count
+# usage without logging the API key" was an explicit product requirement.
+_research_log = logging.getLogger("cookie_monster.deletion_resolver")
+_research_log.setLevel(logging.INFO)
+if not _research_log.handlers:
+    _research_handler = logging.StreamHandler()
+    _research_handler.setFormatter(logging.Formatter("%(asctime)s [cookie-monster-research] %(message)s"))
+    _research_log.addHandler(_research_handler)
+    _research_log.propagate = False
 
 # NO_METHOD_FOUND is included here (not just NOT_STARTED/METHOD_LOOKUP/
 # UNKNOWN/READY) so a later successful research attempt - automatic retry
@@ -141,13 +154,23 @@ def _run_research_only(provider: DeletionResearchProvider, company_name: str, do
     - verified=True: extra is the dict of ResearchResult fields to copy
       onto the recipe (see _RECIPE_RESULT_FIELDS).
     - verified=False: failure_reason is a ResearchFailureReason.* category
-      (safe to show in the UI); extra optionally has a "detail" key with a
-      capped, human-readable technical message (audit-log only, never
-      shown in the UI as-is).
+      (safe to show in the UI); extra may carry additional audit-only or
+      manual-review context depending on the reason - a capped "detail"
+      message for TECHNICAL_ERROR, or a "blocked_url"/"unverified_lead_url"
+      for SOURCE_BLOCKED/an unverified Tier B portal (see
+      deletion_research.py's SourceBlockedDiscovery/UnverifiedPortalDiscovery).
+      BUDGET_EXHAUSTED carries no extra - it's a pure deferral, not a
+      finding.
     """
     try:
         result = provider.research(company_name, domain)
-    except Exception as exc:  # noqa: BLE001 - any provider failure is a technical error, not a crash
+    except BraveBudgetExhausted:
+        return False, ResearchFailureReason.BUDGET_EXHAUSTED, {}
+    except SourceBlockedDiscovery as exc:
+        return False, ResearchFailureReason.SOURCE_BLOCKED, {"blocked_url": exc.url}
+    except UnverifiedPortalDiscovery as exc:
+        return False, ResearchFailureReason.NO_OFFICIAL_SOURCE_FOUND, {"unverified_lead_url": exc.url}
+    except Exception as exc:  # noqa: BLE001 - any other provider failure is a technical error, not a crash
         return False, ResearchFailureReason.TECHNICAL_ERROR, {"detail": str(exc)[:200]}
 
     if result is None or not result.verified:
@@ -156,20 +179,34 @@ def _run_research_only(provider: DeletionResearchProvider, company_name: str, do
     return True, None, {field: getattr(result, field) for field in _RECIPE_RESULT_FIELDS}
 
 
-def _apply_research_outcome(recipe: DeletionRecipe, verified: bool, result_fields: dict) -> None:
+def _apply_research_outcome(
+    recipe: DeletionRecipe, verified: bool, result_fields: dict, reason: str | None = None
+) -> bool:
     """Applies a completed _run_research_only() outcome to the recipe ORM
     object. Must only ever be called from the thread/session that owns
     `recipe` - never from inside the concurrent research step itself.
 
-    A failed attempt on a recipe that was NOT already verified (a genuinely
-    new/unknown company) correctly becomes NEEDS_RESEARCH. But a failed
-    *re-verification* of an already-VERIFIED recipe (e.g. a stale seed
-    re-checked with research disabled, or a transient fetch failure) must
-    NOT destroy the last-known-good data - that would make clicking
-    "Research deletion method" or a routine freshness re-check actively
-    worse than doing nothing. It stays VERIFIED and gets retried at the
-    next freshness/cooldown cycle instead.
+    Returns True if this was counted as a real attempt (research_attempts
+    incremented, last_attempted_at/status updated), False if it was a pure
+    no-op deferral - today, only ResearchFailureReason.BUDGET_EXHAUSTED:
+    the Brave daily budget was exhausted, so Tier B never even ran. Per
+    product decision, that must NEVER count as a failed research attempt -
+    the recipe is left completely untouched and simply becomes eligible
+    again the next tick, once budget allows it.
+
+    A failed (but counted) attempt on a recipe that was NOT already
+    verified (a genuinely new/unknown company) correctly becomes
+    NEEDS_RESEARCH. But a failed *re-verification* of an already-VERIFIED
+    recipe (e.g. a stale seed re-checked with research disabled, or a
+    transient fetch failure) must NOT destroy the last-known-good data -
+    that would make clicking "Research deletion method" or a routine
+    freshness re-check actively worse than doing nothing. It stays
+    VERIFIED and gets retried at the next freshness/cooldown cycle
+    instead.
     """
+    if reason == ResearchFailureReason.BUDGET_EXHAUSTED:
+        return False
+
     now = datetime.datetime.utcnow()
     was_verified = recipe.status == RecipeStatus.VERIFIED
     recipe.research_attempts += 1
@@ -178,7 +215,7 @@ def _apply_research_outcome(recipe: DeletionRecipe, verified: bool, result_field
     if not verified:
         if not was_verified:
             recipe.status = RecipeStatus.NEEDS_RESEARCH
-        return
+        return True
 
     changed = (
         recipe.method != result_fields["method"]
@@ -194,20 +231,22 @@ def _apply_research_outcome(recipe: DeletionRecipe, verified: bool, result_field
     recipe.expires_at = now + datetime.timedelta(days=config.DELETION_RECIPE_FRESHNESS_DAYS)
     if changed:
         recipe.recipe_version += 1
+    return True
 
 
 def _research_and_update_recipe(
     recipe: DeletionRecipe, company_name: str, provider: DeletionResearchProvider
-) -> tuple[bool, str | None, dict]:
+) -> tuple[bool, str | None, dict, bool]:
     """Synchronous single-recipe path - used by resolve_deletion_method()
     (the dashboard's manual button, one row, fine to block briefly).
-    Returns (verified, failure_reason, extra) - failure_reason/extra are
-    None/{} when verified. See _run_research_only/_apply_research_outcome
-    for the split version process_pending() uses to run several of these
-    concurrently."""
+    Returns (verified, failure_reason, extra, counted) - failure_reason/
+    extra are None/{} when verified; counted is False only for a
+    budget-exhausted deferral (see _apply_research_outcome). See
+    _run_research_only/_apply_research_outcome for the split version
+    process_pending() uses to run several of these concurrently."""
     verified, reason, result_fields = _run_research_only(provider, company_name, recipe.domain)
-    _apply_research_outcome(recipe, verified, result_fields)
-    return verified, reason, ({} if verified else result_fields)
+    counted = _apply_research_outcome(recipe, verified, result_fields, reason)
+    return verified, reason, ({} if verified else result_fields), counted
 
 
 def _failure_evidence(recipe: DeletionRecipe, reason: str | None, extra: dict) -> dict:
@@ -216,6 +255,10 @@ def _failure_evidence(recipe: DeletionRecipe, reason: str | None, extra: dict) -
         evidence["reason"] = reason
     if extra.get("detail"):
         evidence["detail"] = extra["detail"]
+    if extra.get("blocked_url"):
+        evidence["blocked_url"] = extra["blocked_url"]
+    if extra.get("unverified_lead_url"):
+        evidence["unverified_lead_url"] = extra["unverified_lead_url"]
     return evidence
 
 
@@ -283,10 +326,29 @@ def resolve_deletion_method(
 
     # Visible immediately - a concurrent dashboard load sees "Researching..."
     # for the duration of this call, not the previous stale state.
+    original_status = company.deletion_status
     company.deletion_status = DeletionStatus.METHOD_LOOKUP
     db.commit()
 
-    verified, reason, extra = _research_and_update_recipe(recipe, company.name, provider)
+    verified, reason, extra, counted = _research_and_update_recipe(recipe, company.name, provider)
+
+    if not counted:
+        # Budget-exhausted deferral: must NEVER count as a failed attempt -
+        # restore exactly the status this company had before, touch nothing
+        # else on the recipe, and record a distinct, non-failure audit event.
+        company.deletion_status = original_status
+        record_event(
+            db, company.id, EventType.RESEARCH_DEFERRED,
+            evidence={"domain": recipe.domain, "reason": reason},
+        )
+        db.commit()
+        if reason == ResearchFailureReason.BUDGET_EXHAUSTED:
+            _research_log.info(
+                "Brave Search daily budget exhausted (limit=%d/day) - deferring research for %s, no attempt counted",
+                config.BRAVE_SEARCH_DAILY_QUERY_BUDGET, recipe.domain,
+            )
+        return True
+
     apply_recipe_to_company(company, recipe)
     record_event(
         db, company.id,
@@ -342,10 +404,12 @@ def process_pending(db: Session, provider: DeletionResearchProvider, limit: int 
         return 0
 
     companies_by_recipe_id: dict[int, list[Company]] = {}
+    original_statuses: dict[int, str] = {}
     for recipe in eligible:
         companies = db.query(Company).filter(Company.domain == recipe.domain).all()
         companies_by_recipe_id[recipe.id] = companies
         for company in companies:
+            original_statuses[company.id] = company.deletion_status
             company.deletion_status = DeletionStatus.METHOD_LOOKUP
     db.commit()  # visible immediately, and never left stuck if the step below dies
 
@@ -364,10 +428,28 @@ def process_pending(db: Session, provider: DeletionResearchProvider, limit: int 
             outcomes[futures[future]] = future.result()
 
     processed = 0
+    deferred_count = 0
     for recipe in eligible:
         verified, reason, extra = outcomes[recipe.id]
-        _apply_research_outcome(recipe, verified, extra)
-        for company in companies_by_recipe_id[recipe.id]:
+        counted = _apply_research_outcome(recipe, verified, extra, reason)
+        companies = companies_by_recipe_id[recipe.id]
+
+        if not counted:
+            # Budget-exhausted deferral: restore each company's exact
+            # pre-attempt status, touch nothing else on the recipe, and
+            # record a distinct, non-failure audit event - never counted
+            # toward `processed` (this attempt never really happened).
+            for company in companies:
+                company.deletion_status = original_statuses[company.id]
+                record_event(
+                    db, company.id, EventType.RESEARCH_DEFERRED,
+                    evidence={"domain": recipe.domain, "reason": reason},
+                )
+            db.commit()
+            deferred_count += 1
+            continue
+
+        for company in companies:
             apply_recipe_to_company(company, recipe)
             record_event(
                 db, company.id,
@@ -380,5 +462,12 @@ def process_pending(db: Session, provider: DeletionResearchProvider, limit: int 
             )
         db.commit()
         processed += 1
+
+    if deferred_count:
+        _research_log.info(
+            "Brave Search daily budget exhausted (limit=%d/day) - deferred %d compan(y/ies) this tick, "
+            "no attempts counted",
+            config.BRAVE_SEARCH_DAILY_QUERY_BUDGET, deferred_count,
+        )
 
     return processed

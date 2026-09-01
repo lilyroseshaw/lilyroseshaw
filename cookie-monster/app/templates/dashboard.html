@@ -118,6 +118,10 @@
           {%- if info.next_retry_at %} Next automatic retry ~{{ info.next_retry_at.strftime('%b %d, %Y') }}.{% endif -%}
           {%- if info.failure_reason_label %} {{ info.failure_reason_label }}.{% endif -%}
         </p>
+        {% if info.blocked_url %}
+        <p class="deletion-detail">Cookie Monster couldn't confirm this itself - you can check it yourself:
+          <a href="{{ info.blocked_url }}" target="_blank" rel="noopener">{{ info.blocked_url }}</a></p>
+        {% endif %}
         {% endif %}
         <form method="post" action="/api/companies/{{ c.id }}/deletion/research">
           <button type="submit" class="btn btn-secondary btn-small">Research deletion method</button>
@@ -132,6 +136,10 @@
           {%- if info.last_attempted_at %} Last tried {{ info.last_attempted_at.strftime('%b %d, %Y') }}.{% endif -%}
           {%- if info.next_retry_at %} Next automatic retry ~{{ info.next_retry_at.strftime('%b %d, %Y') }}.{% endif -%}
         </p>
+        {% if info.blocked_url %}
+        <p class="deletion-detail">Cookie Monster couldn't confirm this itself - you can check it yourself:
+          <a href="{{ info.blocked_url }}" target="_blank" rel="noopener">{{ info.blocked_url }}</a></p>
+        {% endif %}
         {% endif %}
         <form method="post" action="/api/companies/{{ c.id }}/deletion/research">
           <button type="submit" class="btn btn-secondary btn-small">Try again</button>

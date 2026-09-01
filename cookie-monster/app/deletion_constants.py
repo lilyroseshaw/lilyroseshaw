@@ -149,8 +149,21 @@ class ResearchFailureReason:
     evidence field never surfaced to the UI."""
     NO_OFFICIAL_SOURCE_FOUND = "no_official_source_found"
     TECHNICAL_ERROR = "technical_error"
+    # A Tier B (Brave) discovery resolved to the company's OWN domain, but
+    # our fetcher couldn't reach it (401/403/429) - we never bypass that
+    # block, but the URL is kept as manual-review evidence (see
+    # deletion_research.SourceBlockedDiscovery) rather than silently
+    # treated the same as "found nothing at all".
+    SOURCE_BLOCKED = "source_blocked"
+    # Brave's daily query budget (config.BRAVE_SEARCH_DAILY_QUERY_BUDGET)
+    # was exhausted, so Tier B could not run this attempt. NOT a research
+    # failure - deletion_resolver.py never counts this as an attempt
+    # (research_attempts/last_attempted_at untouched), it just tries again
+    # once budget is available. Paired with EventType.RESEARCH_DEFERRED,
+    # never RESEARCH_FAILED.
+    BUDGET_EXHAUSTED = "brave_budget_exhausted"
 
-    ALL = {NO_OFFICIAL_SOURCE_FOUND, TECHNICAL_ERROR}
+    ALL = {NO_OFFICIAL_SOURCE_FOUND, TECHNICAL_ERROR, SOURCE_BLOCKED, BUDGET_EXHAUSTED}
 
 
 class EventType:
@@ -185,12 +198,18 @@ class EventType:
     # Company.deletion_thread_id non-null so the EXISTING response tracker
     # can take over from here.
     THREAD_ASSOCIATED = "THREAD_ASSOCIATED"
+    # A research attempt was skipped/postponed - not attempted at all -
+    # because Brave's daily query budget was exhausted (see
+    # ResearchFailureReason.BUDGET_EXHAUSTED). Distinct from
+    # RESEARCH_FAILED on purpose: this must never count toward a
+    # recipe's research_attempts or the NO_METHOD_FOUND threshold.
+    RESEARCH_DEFERRED = "RESEARCH_DEFERRED"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
         COMPANY_ACKNOWLEDGED, VERIFICATION_REQUESTED, ADDITIONAL_INFO_REQUESTED,
         COMPLETION_CONFIRMED, USER_MARKED_COMPLETE, REQUEST_REJECTED, FAILED, RETRY,
-        RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED,
+        RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED, RESEARCH_DEFERRED,
     }
 
 
