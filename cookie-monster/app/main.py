@@ -12,8 +12,10 @@ from app.db import get_session, init_db
 from app.deletion_queue import start_background_worker
 from app.deletion_research import build_default_provider
 from app.deletion_resolver import resolve_deletion_method
+from app.deletion_response_tracker import check_company_response
 from app.gmail_scan import scan_inbox
 from app.models import Company
+from app.response_classify import build_default_classifier
 
 app = FastAPI(title="Cookie Monster")
 app.add_middleware(SessionMiddleware, secret_key=config.SESSION_SECRET)
@@ -26,16 +28,17 @@ GMAIL_SCOPE_EXPLANATION = (
     "send mail, or modify/delete/label anything in your inbox."
 )
 
-# One shared provider instance for the process - built once from .env config
-# (see deletion_research.build_default_provider). Used by both the manual
-# "Research deletion method" route and the background enrichment worker.
+# One shared provider/classifier instance for the process - built once from
+# .env config. Used by both the manual "Research"/"Check for responses"
+# routes and the background worker.
 _research_provider = build_default_provider()
+_response_classifier = build_default_classifier()
 
 
 @app.on_event("startup")
 def on_startup():
     init_db()
-    start_background_worker(_research_provider)
+    start_background_worker(_research_provider, _response_classifier)
 
 
 def _status_counts(db) -> dict[str, int]:
@@ -54,6 +57,7 @@ def index(request: Request):
     try:
         connected_address = google_oauth.get_connected_address(db)
         send_enabled = google_oauth.has_send_scope(db)
+        response_tracking_enabled = google_oauth.has_readonly_scope(db)
         counts = _status_counts(db)
     finally:
         db.close()
@@ -66,6 +70,7 @@ def index(request: Request):
             "counts": counts,
             "google_configured": bool(config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET),
             "send_enabled": send_enabled,
+            "response_tracking_enabled": response_tracking_enabled,
         },
     )
 
@@ -87,12 +92,40 @@ def auth_enable_sending(request: Request):
     request emails automatically' feature. Never reached from the normal
     connect/scan flow - only from its own clearly-labeled button, after the
     user has read what gmail.send additionally grants."""
+    db = get_session()
     try:
-        auth_url, state = google_oauth.get_send_authorization_url()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            auth_url, state = google_oauth.get_send_authorization_url(db)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Union of whatever's already granted + gmail.send - never drops an
+        # already-granted scope (e.g. gmail.readonly, if enabled first).
+        scopes = google_oauth.get_granted_scopes(db) | {config.GMAIL_SEND_SCOPE}
+    finally:
+        db.close()
     request.session["oauth_state"] = state
-    request.session["oauth_scopes"] = [*config.GMAIL_SCOPES, config.GMAIL_SEND_SCOPE]
+    request.session["oauth_scopes"] = sorted(scopes)
+    return RedirectResponse(auth_url)
+
+
+@app.get("/auth/enable-response-tracking")
+def auth_enable_response_tracking(request: Request):
+    """SEPARATE, explicit consent step for the optional response-tracking
+    feature (gmail.readonly). Never reached from the normal connect/scan
+    flow, never bundled with gmail.send - only from its own clearly-labeled
+    button, after the user has read exactly what this additionally grants
+    and that Cookie Monster only ever reads threads it itself started."""
+    db = get_session()
+    try:
+        try:
+            auth_url, state = google_oauth.get_response_tracking_authorization_url(db)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        scopes = google_oauth.get_granted_scopes(db) | {config.GMAIL_READONLY_SCOPE}
+    finally:
+        db.close()
+    request.session["oauth_state"] = state
+    request.session["oauth_scopes"] = sorted(scopes)
     return RedirectResponse(auth_url)
 
 
@@ -160,6 +193,7 @@ def dashboard(request: Request, status: str = "all", q: str = ""):
         companies = query.order_by(Company.evidence_count.desc()).all()
         counts = _status_counts(db)
         send_enabled = google_oauth.has_send_scope(db)
+        response_tracking_enabled = google_oauth.has_readonly_scope(db)
     finally:
         db.close()
 
@@ -176,6 +210,7 @@ def dashboard(request: Request, status: str = "all", q: str = ""):
             "updated": request.query_params.get("updated"),
             "duplicate_id": request.query_params.get("duplicate"),
             "send_enabled": send_enabled,
+            "response_tracking_enabled": response_tracking_enabled,
         },
     )
 
@@ -261,6 +296,31 @@ def execute_company_deletion(company_id: int, force: bool = Form(False)):
             return RedirectResponse(f"/dashboard?duplicate={company_id}", status_code=303)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        db.close()
+    return RedirectResponse("/dashboard", status_code=303)
+
+
+@app.post("/api/companies/{company_id}/deletion/check-response")
+def check_company_response_now(company_id: int):
+    """Manual 'Check for responses' - one explicit, on-demand check of this
+    company's tracked thread, same logic the background worker uses.
+    404s if response tracking isn't enabled or this company has no tracked
+    thread, since there'd be nothing to check."""
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        if not google_oauth.has_readonly_scope(db):
+            raise HTTPException(status_code=400, detail="Response tracking is not enabled")
+        if not company.deletion_thread_id:
+            raise HTTPException(status_code=400, detail="No tracked email thread for this company")
+        creds = google_oauth.load_credentials(db)
+        gmail_address = google_oauth.get_connected_address(db)
+        if creds is None or gmail_address is None:
+            raise HTTPException(status_code=400, detail="Gmail is not connected")
+        check_company_response(db, company, creds, gmail_address, _response_classifier)
     finally:
         db.close()
     return RedirectResponse("/dashboard", status_code=303)

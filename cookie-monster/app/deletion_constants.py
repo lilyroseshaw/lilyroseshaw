@@ -65,6 +65,12 @@ class DeletionStatus:
     # of checking status membership alone if that distinction matters to you.
     SYSTEM_VERIFIED = {SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, REJECTED}
 
+    # Statuses for which a company reply might still arrive - the background
+    # response-checker (deletion_response_tracker.py) only polls threads
+    # whose company is in one of these. COMPLETED/REJECTED/FAILED are
+    # terminal: polling stops once a request reaches one of them.
+    ACTIVELY_MONITORED = {SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, UNKNOWN_RESPONSE}
+
 
 def is_system_verified(status: str, evidence: dict | None) -> bool:
     """The status-alone check (`status in DeletionStatus.SYSTEM_VERIFIED`) is
@@ -133,11 +139,18 @@ class EventType:
     REQUEST_REJECTED = "REQUEST_REJECTED"
     FAILED = "FAILED"
     RETRY = "RETRY"
+    # A background response-check attempt hit a technical error (Gmail API
+    # error, network failure, ...). This is NOT a deletion-status change -
+    # the underlying request status (SUBMITTED/IN_PROGRESS/etc.) is left
+    # alone; only this audit event is recorded, and the thread is retried
+    # later per the backoff policy. See deletion_response_tracker.py.
+    RESPONSE_CHECK_FAILED = "RESPONSE_CHECK_FAILED"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
         COMPANY_ACKNOWLEDGED, VERIFICATION_REQUESTED, ADDITIONAL_INFO_REQUESTED,
         COMPLETION_CONFIRMED, USER_MARKED_COMPLETE, REQUEST_REJECTED, FAILED, RETRY,
+        RESPONSE_CHECK_FAILED,
     }
 
 

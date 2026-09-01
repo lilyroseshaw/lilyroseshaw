@@ -1,11 +1,19 @@
 """Google OAuth 2.0 (Authorization Code flow).
 
 The default connect/scan flow requests ONLY gmail.metadata - see
-config.GMAIL_SCOPES. A second, separate scope (gmail.send) exists purely for
-the optional "send deletion-request emails automatically" feature and is
-only ever requested through get_send_authorization_url(), which is only
-reachable from its own clearly-labeled UI action, never bundled silently
-into the scan connection.
+config.GMAIL_SCOPES. Two further scopes exist purely for their own optional
+features and are only ever requested through their own clearly-labeled UI
+action, never bundled silently into the scan connection:
+
+- gmail.send - "send deletion-request emails automatically"
+  (get_send_authorization_url)
+- gmail.readonly - "track company responses" (get_response_tracking_authorization_url)
+
+Only one OAuthToken row exists (single local user), and re-consenting
+replaces it entirely - so every "enable X" flow requests the UNION of
+whatever scopes are already granted plus the one new scope (see
+get_granted_scopes), not a hardcoded pair. Otherwise enabling response
+tracking after already enabling sending would silently drop the send grant.
 
 Never requests, sees, or stores the user's Google password - that's Google's
 job, not ours. Only a refresh token is persisted, and only encrypted
@@ -53,12 +61,33 @@ def get_authorization_url(scopes: list[str] | None = None) -> tuple[str, str]:
     return auth_url, state
 
 
-def get_send_authorization_url() -> tuple[str, str]:
+def get_granted_scopes(db: Session) -> set[str]:
+    """Scopes on the current token, or the base scan scope if not connected
+    yet. Used to compute the union for an additional-consent flow, so
+    granting one optional scope never silently drops another already-granted
+    one (see module docstring)."""
+    row = db.query(OAuthToken).first()
+    if row is None:
+        return set(config.GMAIL_SCOPES)
+    return set(row.scopes_granted.split())
+
+
+def get_send_authorization_url(db: Session) -> tuple[str, str]:
     """Separate, explicit consent step for the optional auto-send feature.
-    Requests gmail.metadata + gmail.send together (a fresh full consent,
-    not an invisible scope bump) so Google's own consent screen shows both
-    permissions being granted."""
-    return get_authorization_url(scopes=[*config.GMAIL_SCOPES, config.GMAIL_SEND_SCOPE])
+    Requests (whatever's already granted) + gmail.send - a fresh full
+    consent, not an invisible scope bump - so Google's own consent screen
+    shows every permission being granted, and no previously-granted scope
+    (e.g. gmail.readonly, if enabled first) gets silently dropped."""
+    scopes = get_granted_scopes(db) | {config.GMAIL_SEND_SCOPE}
+    return get_authorization_url(scopes=sorted(scopes))
+
+
+def get_response_tracking_authorization_url(db: Session) -> tuple[str, str]:
+    """Separate, explicit consent step for the optional response-tracking
+    feature. Same union approach as get_send_authorization_url - never drops
+    an already-granted scope."""
+    scopes = get_granted_scopes(db) | {config.GMAIL_READONLY_SCOPE}
+    return get_authorization_url(scopes=sorted(scopes))
 
 
 def exchange_code_for_credentials(code: str, scopes: list[str] | None = None) -> Credentials:
@@ -109,10 +138,14 @@ def get_connected_address(db: Session) -> str | None:
 def has_send_scope(db: Session) -> bool:
     """Whether the user has completed the SEPARATE gmail.send consent step.
     False for everyone by default - the scan/connect flow never grants this."""
-    row = db.query(OAuthToken).first()
-    if row is None:
-        return False
-    return config.GMAIL_SEND_SCOPE in row.scopes_granted.split()
+    return config.GMAIL_SEND_SCOPE in get_granted_scopes(db)
+
+
+def has_readonly_scope(db: Session) -> bool:
+    """Whether the user has completed the SEPARATE gmail.readonly consent
+    step. False for everyone by default - required before any response
+    tracking can run."""
+    return config.GMAIL_READONLY_SCOPE in get_granted_scopes(db)
 
 
 def send_email(creds: Credentials, to_email: str, subject: str, body_text: str) -> dict:
@@ -131,6 +164,20 @@ def send_email(creds: Credentials, to_email: str, subject: str, body_text: str) 
 
     service = build("gmail", "v1", credentials=creds, cache_discovery=False)
     return service.users().messages().send(userId="me", body={"raw": raw}).execute()
+
+
+def fetch_thread_messages(creds: Credentials, thread_id: str) -> list[dict]:
+    """Fetches every message in ONE specific thread - never a search, never
+    a list of the inbox. This is the only Gmail read call response tracking
+    ever makes, and thread_id always comes from Company.deletion_thread_id
+    (a thread Cookie Monster itself started by sending a deletion request),
+    never from searching/listing. Requires gmail.readonly (see
+    has_readonly_scope) - raises googleapiclient.errors.HttpError on
+    failure, which the caller (deletion_response_tracker.py) classifies as
+    transient or permanent."""
+    service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+    thread = service.users().threads().get(userId="me", id=thread_id, format="full").execute()
+    return thread.get("messages", [])
 
 
 def revoke_and_forget(db: Session) -> None:

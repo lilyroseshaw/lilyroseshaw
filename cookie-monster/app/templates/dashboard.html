@@ -140,8 +140,32 @@
         <p class="deletion-line deletion-done">📨 Deletion requested{% if c.deletion_requested_at %} {{ c.deletion_requested_at.strftime('%b %d, %Y') }}{% endif %}. Awaiting confirmation.</p>
         {% endif %}
 
+      {% elif c.deletion_status == "IN_PROGRESS" %}
+        <p class="deletion-line">⏳ Deletion in progress — {{ c.name }} has acknowledged your request.</p>
+
+      {% elif c.deletion_status == "VERIFICATION_NEEDED" %}
+        <p class="deletion-line">🔒 Verification needed — {{ c.name }} is asking you to verify your identity or email before proceeding.</p>
+        <p class="deletion-detail">Cookie Monster never sends verification info for you. Open your Gmail and reply to {{ c.name }} yourself.</p>
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/mark-completed" class="mark-completed-form">
+          <input type="text" name="evidence_note" placeholder="Optional: note once you've verified">
+          <button type="submit" class="btn btn-secondary btn-small"
+            onclick="return confirm('Only mark this completed once {{ c.name|e }} has actually confirmed the deletion.');">
+            Mark as completed
+          </button>
+        </form>
+
+      {% elif c.deletion_status == "MORE_INFO_REQUIRED" %}
+        <p class="deletion-line">📝 Additional information requested — {{ c.name }} needs more from you to proceed.</p>
+        <p class="deletion-detail">Review their reply in Gmail and respond yourself; Cookie Monster doesn't auto-send anything here.</p>
+
+      {% elif c.deletion_status == "UNKNOWN_RESPONSE" %}
+        <p class="deletion-line">❓ Response needs review — {{ c.name }} replied, but Cookie Monster couldn't confidently classify it.</p>
+
       {% elif c.deletion_status == "COMPLETED" %}
-        <p class="deletion-line deletion-done">✅ Deletion completed{% if c.deletion_completed_at %} {{ c.deletion_completed_at.strftime('%b %d, %Y') }}{% endif %}{% if c.deletion_evidence and c.deletion_evidence.type == "user_reported" %} (marked by you){% endif %}</p>
+        <p class="deletion-line deletion-done">✅ Deletion completed{% if c.deletion_completed_at %} {{ c.deletion_completed_at.strftime('%b %d, %Y') }}{% endif %}{% if c.deletion_evidence and c.deletion_evidence.type == "user_reported" %} (marked by you){% else %} (confirmed by {{ c.name }}'s reply){% endif %}</p>
+
+      {% elif c.deletion_status == "REJECTED" %}
+        <p class="deletion-line deletion-failed">🚫 {{ c.name }} declined this request.</p>
 
       {% elif c.deletion_status == "FAILED" %}
         <p class="deletion-line deletion-failed">⚠️ Deletion attempt failed{% if c.deletion_error %}: {{ c.deletion_error }}{% endif %}</p>
@@ -150,9 +174,17 @@
           data-action="Cookie Monster will try this deletion request again."
           data-details="{{ (c.deletion_instructions or '')|e }}"
         >Try again</button>
+      {% endif %}
 
-      {% elif c.deletion_status == "VERIFICATION_NEEDED" %}
-        <p class="deletion-line">🔒 {{ c.name }} requires additional verification to complete this request.</p>
+      {% if c.deletion_evidence and c.deletion_evidence.type == "gmail_reply" and c.deletion_evidence.quote %}
+      <p class="deletion-detail">"{{ c.deletion_evidence.quote }}"</p>
+      {% endif %}
+
+      {% if response_tracking_enabled and c.deletion_thread_id and c.deletion_status in
+            ("SUBMITTED", "IN_PROGRESS", "VERIFICATION_NEEDED", "MORE_INFO_REQUIRED", "UNKNOWN_RESPONSE") %}
+      <form method="post" action="/api/companies/{{ c.id }}/deletion/check-response">
+        <button type="submit" class="btn btn-secondary btn-small">Check for responses</button>
+      </form>
       {% endif %}
 
       {% if duplicate_id and duplicate_id|int == c.id %}

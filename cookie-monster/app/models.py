@@ -91,8 +91,22 @@ class Company(Base):
     deletion_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # Gmail thread ID for a sent EMAIL_REQUEST - captured now so a future
     # response-tracker (Phase 2) can monitor only this specific thread,
-    # never the general inbox. Unused until that phase exists.
+    # never the general inbox.
     deletion_thread_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # --- Response tracking (see deletion_response_tracker.py) ---
+    # The last Gmail message ID in deletion_thread_id that was classified -
+    # dedup marker so a reply is never processed twice.
+    deletion_last_response_message_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Last time a check was *attempted* (success or failure) - used with
+    # deletion_response_check_failures to compute when this thread is next
+    # due, per config.RESPONSE_CHECK_MIN_INTERVAL_HOURS / the backoff policy.
+    deletion_response_checked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    # Consecutive *technical* check failures (Gmail API/network errors) -
+    # reset to 0 on any successful check. Drives exponential backoff.
+    # Never incremented by a company's reply content, only by the check
+    # mechanism itself failing to run.
+    deletion_response_check_failures: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class DeletionRecipe(Base):

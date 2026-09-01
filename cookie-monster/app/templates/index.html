@@ -66,6 +66,42 @@
 </div>
 
 <div class="card">
+  <h2>Optional — Track company responses automatically</h2>
+  <p>
+    Once a deletion email is sent, Cookie Monster can check for the company's
+    reply and update the status for you, instead of you refreshing your own
+    inbox to find out. This requires the broadest of the three permissions
+    Cookie Monster ever asks for:
+  </p>
+  <ul class="permission-list">
+    <li><strong>Additional scope requested:</strong> <code>gmail.readonly</code> —
+      can technically read any message in your mailbox. Google does not offer
+      a narrower "read just one thread" permission, so this is the smallest
+      scope capable of reading a reply's content at all.</li>
+    <li><strong>What Cookie Monster actually does with it:</strong> only ever
+      fetches the ONE Gmail thread it itself created by sending a deletion
+      request — never a search, never a list, never any other conversation in
+      your inbox. That restriction is enforced in Cookie Monster's own code,
+      not by the permission itself, so it's worth being clear-eyed about: the
+      grant is broader than what's used.</li>
+    <li><strong>What happens to what it reads:</strong> a reply's full text is
+      read only to classify it (submitted / in progress / needs verification /
+      needs more info / completed / rejected / unclear), then discarded. Only
+      a short quote justifying the classification is kept, never the full
+      message.</li>
+    <li><strong>What it never does:</strong> reply to the company, send any
+      information (including identity/verification details) on your behalf,
+      or mark a request "completed" from a generic acknowledgment — that
+      requires the company's own text explicitly saying the deletion happened.</li>
+  </ul>
+  {% if response_tracking_enabled %}
+    <p class="connected">✅ Response tracking is enabled.</p>
+  {% else %}
+    <a href="/auth/enable-response-tracking" class="btn btn-secondary">Enable response tracking</a>
+  {% endif %}
+</div>
+
+<div class="card">
   <h2>Step 2 — Scan your inbox</h2>
   <p>
     This searches for messages that look like account, order, subscription, or

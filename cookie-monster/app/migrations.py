@@ -41,6 +41,12 @@ NEW_DELETION_COLUMNS: list[tuple[str, str, str | None]] = [
     ("deletion_completed_at", "DATETIME", None),
     ("deletion_evidence", "JSON", "'{}'"),
     ("deletion_error", "VARCHAR(500)", None),
+    # Added in Phase 1 (models.py) but missed here at the time - fixed now.
+    ("deletion_thread_id", "VARCHAR(100)", None),
+    # Phase 2 - response tracking.
+    ("deletion_last_response_message_id", "VARCHAR(100)", None),
+    ("deletion_response_checked_at", "DATETIME", None),
+    ("deletion_response_check_failures", "INTEGER", "0"),
 ]
 
 

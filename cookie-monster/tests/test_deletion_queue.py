@@ -1,7 +1,9 @@
 import asyncio
+import base64
 import datetime
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -13,8 +15,9 @@ from app.db import Base
 from app.deletion_constants import DeletionStatus
 from app.deletion_research import DeletionResearchProvider
 from app.deletion_resolver import enqueue_pending
-from app.models import Company
+from app.models import Company, OAuthToken
 from app.research_types import ResearchResult
+from app.response_classify import ResponseClassifier
 
 
 @pytest.fixture()
@@ -129,3 +132,74 @@ def test_worker_tick_survives_provider_exceptions(file_db, monkeypatch):
         deletion_queue.stop_background_worker()
 
     asyncio.run(run())  # test passes simply by not raising
+
+
+def test_response_checking_skipped_without_readonly_scope(file_db, monkeypatch):
+    """Response tracking must be a strict no-op (not an error) when the
+    user hasn't granted gmail.readonly - it's opt-in, not assumed."""
+    db = dbmod.get_session()
+    company = Company(
+        name="Widget Co", domain="widgetco.com", relationship_type="transactional", status="confirmed",
+        confidence="high", evidence_count=1, evidence_types=[], example_subjects=[], detection_reasons=[],
+        first_seen=datetime.datetime(2022, 1, 1), last_seen=datetime.datetime(2022, 1, 1),
+        deletion_status=DeletionStatus.SUBMITTED, deletion_thread_id="thread1",
+    )
+    db.add(company)
+    db.commit()
+    db.close()
+
+    monkeypatch.setattr(config, "DELETION_QUEUE_INTERVAL_SECONDS", 0.05)
+
+    async def run():
+        deletion_queue.start_background_worker(provider=FakeProvider(), classifier=ResponseClassifier())
+        await asyncio.sleep(0.2)
+        deletion_queue.stop_background_worker()
+
+    asyncio.run(run())
+
+    db2 = dbmod.get_session()
+    refreshed = db2.query(Company).filter(Company.domain == "widgetco.com").one()
+    assert refreshed.deletion_status == DeletionStatus.SUBMITTED  # untouched - no scope granted
+    db2.close()
+
+
+def test_response_checking_runs_when_readonly_scope_granted(file_db, monkeypatch):
+    db = dbmod.get_session()
+    db.add(OAuthToken(
+        gmail_address="me@gmail.com", encrypted_refresh_token="fake-encrypted",
+        scopes_granted=f"{config.GMAIL_SCOPES[0]} {config.GMAIL_READONLY_SCOPE}",
+    ))
+    company = Company(
+        name="Widget Co", domain="widgetco.com", relationship_type="transactional", status="confirmed",
+        confidence="high", evidence_count=1, evidence_types=[], example_subjects=[], detection_reasons=[],
+        first_seen=datetime.datetime(2022, 1, 1), last_seen=datetime.datetime(2022, 1, 1),
+        deletion_status=DeletionStatus.SUBMITTED, deletion_thread_id="thread1",
+    )
+    db.add(company)
+    db.commit()
+    db.close()
+
+    reply = {
+        "id": "m2", "labelIds": ["INBOX"], "internalDate": "2000",
+        "payload": {
+            "headers": [{"name": "From", "value": "privacy@widgetco.com"}],
+            "mimeType": "text/plain",
+            "body": {"data": base64.urlsafe_b64encode(b"Your data has been deleted.").decode()},
+        },
+    }
+
+    monkeypatch.setattr(config, "DELETION_QUEUE_INTERVAL_SECONDS", 0.05)
+
+    async def run():
+        with patch("app.google_oauth.load_credentials", return_value=MagicMock()), \
+             patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+            deletion_queue.start_background_worker(provider=FakeProvider(), classifier=ResponseClassifier())
+            await asyncio.sleep(0.2)
+            deletion_queue.stop_background_worker()
+
+    asyncio.run(run())
+
+    db2 = dbmod.get_session()
+    refreshed = db2.query(Company).filter(Company.domain == "widgetco.com").one()
+    assert refreshed.deletion_status == DeletionStatus.COMPLETED
+    db2.close()

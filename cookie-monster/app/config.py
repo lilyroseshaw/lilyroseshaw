@@ -69,6 +69,24 @@ DELETION_QUEUE_BATCH_SIZE = int(os.environ.get("DELETION_QUEUE_BATCH_SIZE", "3")
 RESEARCH_HTTP_TIMEOUT_SECONDS = float(os.environ.get("RESEARCH_HTTP_TIMEOUT_SECONDS", "10"))
 RESEARCH_MAX_PAGES_PER_COMPANY = int(os.environ.get("RESEARCH_MAX_PAGES_PER_COMPANY", "5"))
 
+# --- Response tracking (see app/deletion_response_tracker.py) ---
+
+# Read-only scope. Only ever requested via a separate, explicit consent step
+# (/auth/enable-response-tracking), off by default, never bundled into
+# GMAIL_SCOPES or GMAIL_SEND_SCOPE. The app only ever calls threads().get()
+# on a thread_id it already stored itself - never lists/searches the inbox.
+GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+
+# Minimum time between checks of a healthy (no recent failures) thread.
+RESPONSE_CHECK_MIN_INTERVAL_HOURS = float(os.environ.get("RESPONSE_CHECK_MIN_INTERVAL_HOURS", "6"))
+# Exponential backoff for a thread whose checks keep hitting technical
+# errors: base * 2^failures, capped at max. A transient failure never
+# changes the underlying deletion status - see deletion_response_tracker.py.
+RESPONSE_CHECK_BACKOFF_BASE_HOURS = float(os.environ.get("RESPONSE_CHECK_BACKOFF_BASE_HOURS", "1"))
+RESPONSE_CHECK_BACKOFF_MAX_HOURS = float(os.environ.get("RESPONSE_CHECK_BACKOFF_MAX_HOURS", "48"))
+# Max threads checked per background-worker tick.
+RESPONSE_CHECK_BATCH_SIZE = int(os.environ.get("RESPONSE_CHECK_BATCH_SIZE", "5"))
+
 
 def require_google_credentials() -> None:
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
