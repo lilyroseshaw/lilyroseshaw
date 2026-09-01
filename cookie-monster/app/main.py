@@ -75,15 +75,28 @@ def index(request: Request):
     )
 
 
+def _start_oauth_flow(request: Request, flow_name: str, auth_url: str, state: str, scopes: list[str]) -> RedirectResponse:
+    """Records this flow's pending (state, scopes) under its OWN key in the
+    session, instead of one shared slot. Three flows (login/send/readonly)
+    can otherwise be triggered close together - e.g. two tabs, a double
+    click, or starting a second 'enable X' before finishing the first one's
+    Google consent screen - and a single shared slot means the second write
+    silently clobbers the first flow's pending state, so its callback later
+    fails with 'Invalid OAuth state' even though the user did everything
+    right. Per-flow keys mean starting one flow never erases another's."""
+    pending = request.session.get("oauth_pending", {})
+    pending[flow_name] = {"state": state, "scopes": scopes}
+    request.session["oauth_pending"] = pending
+    return RedirectResponse(auth_url)
+
+
 @app.get("/auth/login")
 def auth_login(request: Request):
     try:
         auth_url, state = google_oauth.get_authorization_url()
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    request.session["oauth_state"] = state
-    request.session["oauth_scopes"] = config.GMAIL_SCOPES
-    return RedirectResponse(auth_url)
+    return _start_oauth_flow(request, "login", auth_url, state, config.GMAIL_SCOPES)
 
 
 @app.get("/auth/enable-sending")
@@ -103,9 +116,7 @@ def auth_enable_sending(request: Request):
         scopes = google_oauth.get_granted_scopes(db) | {config.GMAIL_SEND_SCOPE}
     finally:
         db.close()
-    request.session["oauth_state"] = state
-    request.session["oauth_scopes"] = sorted(scopes)
-    return RedirectResponse(auth_url)
+    return _start_oauth_flow(request, "send", auth_url, state, sorted(scopes))
 
 
 @app.get("/auth/enable-response-tracking")
@@ -124,19 +135,32 @@ def auth_enable_response_tracking(request: Request):
         scopes = google_oauth.get_granted_scopes(db) | {config.GMAIL_READONLY_SCOPE}
     finally:
         db.close()
-    request.session["oauth_state"] = state
-    request.session["oauth_scopes"] = sorted(scopes)
-    return RedirectResponse(auth_url)
+    return _start_oauth_flow(request, "readonly", auth_url, state, sorted(scopes))
 
 
 @app.get("/auth/callback")
 def auth_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None):
     if error:
         return RedirectResponse(f"/?error={error}")
-    expected_state = request.session.pop("oauth_state", None)
-    scopes = request.session.pop("oauth_scopes", config.GMAIL_SCOPES)
-    if not code or not state or not expected_state or not secrets.compare_digest(state, expected_state):
+
+    # Find which pending flow (login/send/readonly) this callback belongs to
+    # by matching Google's returned state against each flow's own stored
+    # state - NOT a single shared slot, so completing this flow never
+    # touches any other flow that might still be pending in this session.
+    pending = request.session.get("oauth_pending", {})
+    matched_flow_name = None
+    if state:
+        for flow_name, entry in pending.items():
+            if secrets.compare_digest(state, entry.get("state", "")):
+                matched_flow_name = flow_name
+                break
+
+    if not code or not state or matched_flow_name is None:
         raise HTTPException(status_code=400, detail="Invalid OAuth state or missing code")
+
+    matched = pending.pop(matched_flow_name)
+    request.session["oauth_pending"] = pending
+    scopes = matched["scopes"]
 
     creds = google_oauth.exchange_code_for_credentials(code, scopes=scopes)
     gmail_address = google_oauth.get_gmail_address(creds)
