@@ -58,12 +58,25 @@ DELETION_RECIPE_FRESHNESS_DAYS = int(os.environ.get("DELETION_RECIPE_FRESHNESS_D
 # How long to wait before retrying a company whose last research attempt
 # came back NEEDS_RESEARCH, so a hard-to-verify company isn't re-hit every scan.
 DELETION_RECIPE_RETRY_COOLDOWN_DAYS = int(os.environ.get("DELETION_RECIPE_RETRY_COOLDOWN_DAYS", "7"))
+# After this many unsuccessful research attempts on a recipe that's never
+# been verified, a company's status becomes NO_METHOD_FOUND instead of the
+# generic "still retrying" UNKNOWN - a distinct, honest "this one may
+# genuinely need a manual look" signal instead of the same message
+# forever. Retries keep happening on the normal cooldown regardless - this
+# only changes what's displayed, never stops future attempts (manual or
+# automatic).
+DELETION_RECIPE_FAILURE_THRESHOLD = int(os.environ.get("DELETION_RECIPE_FAILURE_THRESHOLD", "3"))
 
 # Background enrichment queue (app/deletion_queue.py) - a single-process
 # asyncio poller, not a real task queue. Good enough for one local user;
 # see TODO.md for what a production version would need instead.
 DELETION_QUEUE_INTERVAL_SECONDS = int(os.environ.get("DELETION_QUEUE_INTERVAL_SECONDS", "60"))
 DELETION_QUEUE_BATCH_SIZE = int(os.environ.get("DELETION_QUEUE_BATCH_SIZE", "3"))
+# How many companies' research can run concurrently within one batch/tick -
+# bounded so one slow site can't stall the rest of the same batch, but
+# never spawns more outbound requests at once than this. Deliberately
+# small/conservative - this is a politeness limit, not a performance knob.
+DELETION_RESEARCH_MAX_CONCURRENCY = int(os.environ.get("DELETION_RESEARCH_MAX_CONCURRENCY", "3"))
 
 # Politeness limits for the crawler/fetcher - never hammer a company's site.
 RESEARCH_HTTP_TIMEOUT_SECONDS = float(os.environ.get("RESEARCH_HTTP_TIMEOUT_SECONDS", "10"))

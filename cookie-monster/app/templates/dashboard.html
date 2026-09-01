@@ -100,14 +100,42 @@
 
     {% if c.status == "confirmed" %}
     <div class="deletion-block deletion-{{ c.deletion_status|lower }}">
-      {% if c.deletion_status in ("NOT_STARTED", "UNKNOWN") %}
-        <p class="deletion-line">🔍 Deletion method not verified yet.</p>
+      {% if c.deletion_status == "NOT_STARTED" %}
+        <p class="deletion-line">🔍 Not started.</p>
         <form method="post" action="/api/companies/{{ c.id }}/deletion/research">
           <button type="submit" class="btn btn-secondary btn-small">Research deletion method</button>
         </form>
 
       {% elif c.deletion_status == "METHOD_LOOKUP" %}
-        <p class="deletion-line">⏳ Finding deletion method…</p>
+        <p class="deletion-line">⏳ Researching…</p>
+
+      {% elif c.deletion_status == "UNKNOWN" %}
+        {% set info = research_info.get(c.id) %}
+        <p class="deletion-line">🔁 Retry scheduled{% if info and info.attempts %} (attempt {{ info.attempts }} of {{ threshold }}){% endif %}.</p>
+        {% if info %}
+        <p class="deletion-detail">
+          {%- if info.last_attempted_at %}Last tried {{ info.last_attempted_at.strftime('%b %d, %Y') }}.{% endif -%}
+          {%- if info.next_retry_at %} Next automatic retry ~{{ info.next_retry_at.strftime('%b %d, %Y') }}.{% endif -%}
+          {%- if info.failure_reason_label %} {{ info.failure_reason_label }}.{% endif -%}
+        </p>
+        {% endif %}
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/research">
+          <button type="submit" class="btn btn-secondary btn-small">Research deletion method</button>
+        </form>
+
+      {% elif c.deletion_status == "NO_METHOD_FOUND" %}
+        {% set info = research_info.get(c.id) %}
+        <p class="deletion-line deletion-failed">⚠️ No official method found{% if info and info.attempts %} after {{ info.attempts }} attempts{% endif %}.</p>
+        {% if info %}
+        <p class="deletion-detail">
+          {%- if info.failure_reason_label %}{{ info.failure_reason_label }}.{% endif -%}
+          {%- if info.last_attempted_at %} Last tried {{ info.last_attempted_at.strftime('%b %d, %Y') }}.{% endif -%}
+          {%- if info.next_retry_at %} Next automatic retry ~{{ info.next_retry_at.strftime('%b %d, %Y') }}.{% endif -%}
+        </p>
+        {% endif %}
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/research">
+          <button type="submit" class="btn btn-secondary btn-small">Try again</button>
+        </form>
 
       {% elif c.deletion_status == "READY" %}
         <p class="deletion-line deletion-ready">✅ Deletion method ready ({{ c.deletion_method|lower|replace('_', ' ') }})</p>

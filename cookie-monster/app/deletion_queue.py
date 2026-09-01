@@ -23,7 +23,18 @@ from app.deletion_resolver import process_pending
 from app.deletion_response_tracker import process_response_checks
 from app.response_classify import ResponseClassifier, build_default_classifier
 
+# Explicit handler/level so per-tick activity (recipes researched, threads
+# checked) is actually visible in the terminal running uvicorn, instead of
+# being silently swallowed by uvicorn's default root log level - "is there
+# enough logging to tell what research is doing" was an explicit gap
+# raised in the recipe-verification investigation.
 logger = logging.getLogger("cookie_monster.deletion_queue")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _queue_handler = logging.StreamHandler()
+    _queue_handler.setFormatter(logging.Formatter("%(asctime)s [cookie-monster-queue] %(message)s"))
+    logger.addHandler(_queue_handler)
+    logger.propagate = False
 
 _worker_task: asyncio.Task | None = None
 

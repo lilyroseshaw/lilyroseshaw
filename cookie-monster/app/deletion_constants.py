@@ -41,11 +41,19 @@ class DeletionStatus:
     FAILED = "FAILED"
     UNKNOWN_RESPONSE = "UNKNOWN_RESPONSE"
     UNKNOWN = "UNKNOWN"
+    # Research has been attempted config.DELETION_RECIPE_FAILURE_THRESHOLD+
+    # times on a domain that's never verified - distinct from UNKNOWN
+    # (which still means "will keep retrying, just hasn't succeeded yet").
+    # Never terminal: automatic retries keep happening on the normal
+    # cooldown, and the manual "Research deletion method" button still
+    # works from here - see deletion_resolver.py.
+    NO_METHOD_FOUND = "NO_METHOD_FOUND"
 
     ALL = {
         NOT_STARTED, METHOD_LOOKUP, READY, CONFIRMATION_REQUIRED, SUBMITTING,
         SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED,
         USER_ACTION_REQUIRED, COMPLETED, REJECTED, FAILED, UNKNOWN_RESPONSE, UNKNOWN,
+        NO_METHOD_FOUND,
     }
 
     # Statuses that engine code only ever sets when it has real evidence -
@@ -129,6 +137,20 @@ class SourceType:
         OFFICIAL_PRIVACY_RIGHTS_PAGE, OFFICIAL_DELETION_PAGE, OFFICIAL_PRIVACY_PORTAL,
         OFFICIAL_ACCOUNT_HELP, OFFICIAL_PRIVACY_POLICY, OFFICIAL_SUPPORT_DOCS,
     ]
+
+
+class ResearchFailureReason:
+    """Short, safe category for why a research attempt didn't verify a
+    recipe - stored in a DeletionEvent's evidence and shown (via a small
+    friendly-label mapping in main.py) on the dashboard for UNKNOWN/
+    NO_METHOD_FOUND companies. Deliberately just a category, never the raw
+    exception text - see deletion_resolver.py's _run_research_only, which
+    keeps any actual exception message in a separate, audit-only "detail"
+    evidence field never surfaced to the UI."""
+    NO_OFFICIAL_SOURCE_FOUND = "no_official_source_found"
+    TECHNICAL_ERROR = "technical_error"
+
+    ALL = {NO_OFFICIAL_SOURCE_FOUND, TECHNICAL_ERROR}
 
 
 class EventType:

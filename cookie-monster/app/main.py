@@ -1,3 +1,4 @@
+import datetime
 import logging
 import secrets
 from urllib.parse import urlparse
@@ -12,14 +13,14 @@ from starlette.middleware.sessions import SessionMiddleware
 from app import config, deletion_engine, google_oauth
 from app.aggregator import aggregate, store
 from app.db import get_session, init_db
-from app.deletion_constants import DeletionStatus, EventSource, EventType
+from app.deletion_constants import DeletionStatus, EventSource, EventType, RecipeStatus, ResearchFailureReason
 from app.deletion_events import record_event
 from app.deletion_queue import start_background_worker
 from app.deletion_research import build_default_provider
-from app.deletion_resolver import resolve_deletion_method
+from app.deletion_resolver import backfill_all_companies, recover_stuck_method_lookup, resolve_deletion_method
 from app.deletion_response_tracker import check_company_response
 from app.gmail_scan import scan_inbox
-from app.models import Company
+from app.models import Company, DeletionEvent, DeletionRecipe
 from app.response_classify import build_default_classifier
 
 app = FastAPI(title="Cookie Monster")
@@ -55,9 +56,38 @@ _research_provider = build_default_provider()
 _response_classifier = build_default_classifier()
 
 
+# Same reasoning as _oauth_log above: uvicorn's default logging setup
+# swallows a plain INFO-level logger, and knowing whether the startup
+# backfill/recovery actually did anything was an explicit gap raised in
+# the recipe-verification investigation - so this gets its own handler too.
+_startup_log = logging.getLogger("cookie_monster.startup")
+_startup_log.setLevel(logging.INFO)
+if not _startup_log.handlers:
+    _startup_handler = logging.StreamHandler()
+    _startup_handler.setFormatter(logging.Formatter("%(asctime)s [cookie-monster-startup] %(message)s"))
+    _startup_log.addHandler(_startup_handler)
+    _startup_log.propagate = False
+
+
 @app.on_event("startup")
 def on_startup():
     init_db()
+    db = get_session()
+    try:
+        # Ensures every existing company - not just ones a scan happens to
+        # touch - has at least a recipe stub and becomes visible to the
+        # background research worker; then clears any company left showing
+        # "Researching..." from a process that was killed mid-attempt on a
+        # previous run. Both are idempotent and safe to run on every startup.
+        backfilled = backfill_all_companies(db)
+        recovered = recover_stuck_method_lookup(db)
+        if backfilled or recovered:
+            _startup_log.info(
+                "startup: ensured recipe coverage for %d compan(y/ies), recovered %d stuck in METHOD_LOOKUP",
+                backfilled, recovered,
+            )
+    finally:
+        db.close()
     start_background_worker(_research_provider, _response_classifier)
 
 
@@ -270,6 +300,59 @@ def run_scan(max_messages: int = Form(600)):
     )
 
 
+# Short, safe categories only (see ResearchFailureReason) - never the raw
+# exception text kept in a DeletionEvent's "detail" field for the audit
+# trail. Deliberately not shown at all on the dashboard.
+_FAILURE_REASON_LABELS = {
+    ResearchFailureReason.NO_OFFICIAL_SOURCE_FOUND: "Couldn't find an official deletion/privacy page on their site",
+    ResearchFailureReason.TECHNICAL_ERROR: "A technical error interrupted the last attempt",
+}
+
+
+def _research_info_for_companies(db, companies: list[Company]) -> dict[int, dict]:
+    """Per-company research metadata for the dashboard's UNKNOWN/
+    NO_METHOD_FOUND states (attempt count, last/next attempt time, a short
+    safe failure-reason label) - looked up from the shared DeletionRecipe
+    (by domain) and, only for companies actually in one of those two
+    statuses, the most recent RESEARCH_FAILED event for a reason label."""
+    relevant = [c for c in companies if c.deletion_status in (DeletionStatus.UNKNOWN, DeletionStatus.NO_METHOD_FOUND)]
+    if not relevant:
+        return {}
+
+    domains = {c.domain for c in relevant}
+    recipes_by_domain = {
+        r.domain: r for r in db.query(DeletionRecipe).filter(DeletionRecipe.domain.in_(domains)).all()
+    }
+
+    info: dict[int, dict] = {}
+    for company in relevant:
+        recipe = recipes_by_domain.get(company.domain)
+        if recipe is None:
+            continue
+        next_retry_at = None
+        if recipe.last_attempted_at and recipe.status != RecipeStatus.VERIFIED:
+            next_retry_at = recipe.last_attempted_at + datetime.timedelta(days=config.DELETION_RECIPE_RETRY_COOLDOWN_DAYS)
+
+        failure_reason_label = None
+        last_event = (
+            db.query(DeletionEvent)
+            .filter(DeletionEvent.company_id == company.id, DeletionEvent.event_type == EventType.RESEARCH_FAILED)
+            .order_by(DeletionEvent.occurred_at.desc())
+            .first()
+        )
+        if last_event:
+            reason = (last_event.evidence or {}).get("reason")
+            failure_reason_label = _FAILURE_REASON_LABELS.get(reason)
+
+        info[company.id] = {
+            "attempts": recipe.research_attempts,
+            "last_attempted_at": recipe.last_attempted_at,
+            "next_retry_at": next_retry_at,
+            "failure_reason_label": failure_reason_label,
+        }
+    return info
+
+
 def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
     db = get_session()
     try:
@@ -285,6 +368,7 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         counts = _status_counts(db)
         send_enabled = google_oauth.has_send_scope(db)
         response_tracking_enabled = google_oauth.has_readonly_scope(db)
+        research_info = _research_info_for_companies(db, companies)
     finally:
         db.close()
 
@@ -300,6 +384,8 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         "duplicate_id": request.query_params.get("duplicate"),
         "send_enabled": send_enabled,
         "response_tracking_enabled": response_tracking_enabled,
+        "research_info": research_info,
+        "threshold": config.DELETION_RECIPE_FAILURE_THRESHOLD,
         "attach_preview": None,
         "attach_preview_error": None,
     }
