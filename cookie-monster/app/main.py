@@ -13,7 +13,15 @@ from starlette.middleware.sessions import SessionMiddleware
 from app import config, deletion_engine, google_oauth
 from app.aggregator import aggregate, store
 from app.db import get_session, init_db
-from app.deletion_constants import DeletionStatus, EventSource, EventType, RecipeStatus, ResearchFailureReason
+from app.deletion_constants import (
+    DeletionMethod,
+    DeletionStatus,
+    EventSource,
+    EventType,
+    ExecutionCapability,
+    RecipeStatus,
+    ResearchFailureReason,
+)
 from app.deletion_events import record_event
 from app.deletion_queue import start_background_worker
 from app.deletion_research import build_default_provider
@@ -81,10 +89,17 @@ def on_startup():
         # previous run. Both are idempotent and safe to run on every startup.
         backfilled = backfill_all_companies(db)
         recovered = recover_stuck_method_lookup(db)
+        interrupted = deletion_engine.recover_stuck_submitting(db)
         if backfilled or recovered:
             _startup_log.info(
                 "startup: ensured recipe coverage for %d compan(y/ies), recovered %d stuck in METHOD_LOOKUP",
                 backfilled, recovered,
+            )
+        if interrupted:
+            _startup_log.info(
+                "startup: found %d compan(y/ies) with an interrupted deletion-email send from a previous "
+                "run - moved to USER_ACTION_REQUIRED for manual review (never auto-resent)",
+                interrupted,
             )
     finally:
         db.close()
@@ -365,6 +380,42 @@ def _research_info_for_companies(db, companies: list[Company]) -> dict[int, dict
     return info
 
 
+_EXECUTION_ACTION_TEXT = {
+    (ExecutionCapability.AUTO_EXECUTABLE, DeletionMethod.EMAIL_REQUEST):
+        "Cookie Monster will send the email below from your connected Gmail address.",
+    (ExecutionCapability.USER_STEP_REQUIRED, DeletionMethod.EMAIL_REQUEST):
+        "Cookie Monster will prepare the email below for you to send yourself.",
+}
+
+
+def _execution_plans_for_companies(db, companies: list[Company]) -> dict[int, dict]:
+    """Per-company execution plan for the dashboard's READY/FAILED states
+    (the only ones that show the 'Delete my data' approval button) - the
+    SAME classify_execution_capability() the actual execute endpoint uses,
+    so the approval modal can never promise something execution won't
+    actually do. Kept out of the template's own logic on purpose - see
+    deletion_engine.py's module docstring."""
+    relevant = [c for c in companies if c.deletion_status in (DeletionStatus.READY, DeletionStatus.FAILED)]
+    plans: dict[int, dict] = {}
+    for company in relevant:
+        if not company.deletion_verified:
+            continue
+        plan = deletion_engine.classify_execution_capability(db, company)
+        action_text = _EXECUTION_ACTION_TEXT.get(
+            (plan.capability, plan.method),
+            f"Cookie Monster will take you to {company.name}'s official deletion page. "
+            "Completing the request there is up to you - Cookie Monster can't do it on your behalf.",
+        )
+        plans[company.id] = {
+            "capability": plan.capability,
+            "reason": plan.reason,
+            "consequences": plan.consequences,
+            "action_text": action_text,
+            "missing_identity_fields": plan.missing_identity_fields,
+        }
+    return plans
+
+
 def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
     db = get_session()
     try:
@@ -381,6 +432,7 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         send_enabled = google_oauth.has_send_scope(db)
         response_tracking_enabled = google_oauth.has_readonly_scope(db)
         research_info = _research_info_for_companies(db, companies)
+        execution_plans = _execution_plans_for_companies(db, companies)
     finally:
         db.close()
 
@@ -397,6 +449,7 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         "send_enabled": send_enabled,
         "response_tracking_enabled": response_tracking_enabled,
         "research_info": research_info,
+        "execution_plans": execution_plans,
         "threshold": config.DELETION_RECIPE_FAILURE_THRESHOLD,
         "attach_preview": None,
         "attach_preview_error": None,
@@ -458,18 +511,29 @@ def research_deletion_method(company_id: int):
 
 @app.get("/api/companies/{company_id}/deletion/preview")
 def preview_deletion_email(company_id: int):
-    """Returns the exact draft that would be sent for an EMAIL_REQUEST
-    company, so the confirmation modal can show the real outgoing email
-    (recipient/subject/body) before the user confirms - never just a
-    one-line description of what will happen."""
+    """Returns the FULL execution plan for the approval modal - not just
+    the exact outgoing email (recipient/subject/body) for EMAIL_REQUEST,
+    but also the execution capability (AUTO_EXECUTABLE/USER_STEP_REQUIRED/
+    MANUAL_HANDOFF) and why, computed by the exact same
+    classify_execution_capability() the execute endpoint itself uses - so
+    this preview can never promise something execution won't actually do."""
     db = get_session()
     try:
         company = db.get(Company, company_id)
         if company is None:
             raise HTTPException(status_code=404, detail="Company not found")
-        gmail_address = google_oauth.get_connected_address(db) or "your Gmail address"
-        draft = deletion_engine.build_email_draft(company, gmail_address)
-        return draft
+        if not company.deletion_verified:
+            raise HTTPException(status_code=400, detail="No verified deletion recipe for this company.")
+        plan = deletion_engine.classify_execution_capability(db, company)
+        response = {
+            "capability": plan.capability,
+            "reason": plan.reason,
+            "consequences": plan.consequences,
+            "missing_identity_fields": plan.missing_identity_fields,
+        }
+        if plan.draft:
+            response.update(plan.draft)  # to / subject / body, at the top level for existing callers
+        return response
     finally:
         db.close()
 
@@ -477,9 +541,12 @@ def preview_deletion_email(company_id: int):
 @app.post("/api/companies/{company_id}/deletion/execute")
 def execute_company_deletion(company_id: int, force: bool = Form(False)):
     """The one 'Delete my data' action. What actually happens depends on the
-    company's deletion_method - see deletion_engine.execute_deletion. If a
-    request was already submitted/completed, this refuses to silently repeat
-    it unless force=True (the UI re-confirms with the user first)."""
+    company's deletion_method AND its current execution capability - see
+    deletion_engine.execute_deletion. If a request was already submitted/
+    completed, this refuses to silently repeat it unless force=True (the UI
+    re-confirms with the user first). A concurrent/duplicate approval for
+    the SAME company (double-click, two tabs) is a silent no-op, not an
+    error - the in-flight attempt resolves on its own shortly."""
     db = get_session()
     try:
         company = db.get(Company, company_id)
@@ -489,6 +556,8 @@ def execute_company_deletion(company_id: int, force: bool = Form(False)):
             deletion_engine.execute_deletion(db, company, force_resend=force)
         except deletion_engine.DuplicateRequestWarning:
             return RedirectResponse(f"/dashboard?duplicate={company_id}", status_code=303)
+        except deletion_engine.ExecutionInFlightError:
+            return RedirectResponse("/dashboard", status_code=303)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:

@@ -154,13 +154,17 @@
         </form>
 
       {% elif c.deletion_status == "READY" %}
+        {% set plan = execution_plans.get(c.id) %}
         <p class="deletion-line deletion-ready">✅ Deletion method ready ({{ c.deletion_method|lower|replace('_', ' ') }})</p>
         <button type="button" class="btn btn-delete delete-my-data-btn"
           data-id="{{ c.id }}"
           data-name="{{ c.name|e }}"
           data-method="{{ c.deletion_method }}"
-          data-action="{% if c.deletion_method == 'EMAIL_REQUEST' %}{% if send_enabled %}Cookie Monster will send the email below from your connected Gmail address.{% else %}Cookie Monster will prepare the email below for you to send yourself — automatic sending isn't enabled.{% endif %}{% else %}Cookie Monster will take you to {{ c.name|e }}'s official deletion page. Completing the request there is up to you — Cookie Monster can't do it on your behalf.{% endif %}"
+          data-capability="{{ plan.capability if plan else 'MANUAL_HANDOFF' }}"
+          data-capability-reason="{{ (plan.reason if plan else '')|e }}"
+          data-action="{{ (plan.action_text if plan else '')|e }}"
           data-details="{{ (c.deletion_instructions or '')|e }}"
+          data-consequences="{{ ((plan.consequences if plan else None) or '')|e }}"
         >🗑️ Delete my data</button>
 
       {% elif c.deletion_status == "USER_ACTION_REQUIRED" %}
@@ -212,11 +216,15 @@
         <p class="deletion-line deletion-failed">🚫 {{ c.name }} declined this request.</p>
 
       {% elif c.deletion_status == "FAILED" %}
+        {% set plan = execution_plans.get(c.id) %}
         <p class="deletion-line deletion-failed">⚠️ Deletion attempt failed{% if c.deletion_error %}: {{ c.deletion_error }}{% endif %}</p>
         <button type="button" class="btn btn-secondary btn-small delete-my-data-btn"
           data-id="{{ c.id }}" data-name="{{ c.name|e }}" data-method="{{ c.deletion_method }}"
+          data-capability="{{ plan.capability if plan else 'MANUAL_HANDOFF' }}"
+          data-capability-reason="{{ (plan.reason if plan else '')|e }}"
           data-action="Cookie Monster will try this deletion request again."
           data-details="{{ (c.deletion_instructions or '')|e }}"
+          data-consequences="{{ ((plan.consequences if plan else None) or '')|e }}"
         >Try again</button>
       {% endif %}
 
@@ -284,6 +292,12 @@
     <h3 id="deletion-modal-title">Delete my data</h3>
     <p id="deletion-modal-action"></p>
     <p id="deletion-modal-details" class="deletion-detail"></p>
+    <div id="deletion-modal-consequences" class="deletion-modal-warning" hidden>
+      <p><strong>Known consequences:</strong> <span id="deletion-modal-consequences-text"></span></p>
+    </div>
+    <div id="deletion-modal-user-step" class="deletion-modal-user-step" hidden>
+      <p>🔑 <strong>A step from you is still required:</strong> <span id="deletion-modal-user-step-reason"></span></p>
+    </div>
     <div id="deletion-modal-email" class="deletion-email-preview" hidden>
       <p><strong>To:</strong> <span id="deletion-modal-email-to"></span></p>
       <p><strong>Subject:</strong> <span id="deletion-modal-email-subject"></span></p>
@@ -293,7 +307,7 @@
     <form method="post" id="deletion-modal-form">
       <div class="deletion-modal-actions">
         <button type="button" class="btn btn-secondary" id="deletion-modal-cancel">Cancel</button>
-        <button type="submit" class="btn btn-delete">Continue with deletion</button>
+        <button type="submit" class="btn btn-delete" id="deletion-modal-submit">Continue with deletion</button>
       </div>
     </form>
   </div>

@@ -966,6 +966,37 @@ header::after {
   font-weight: 700;
 }
 
+.deletion-modal-warning {
+  margin-top: 12px;
+  padding: 10px 12px;
+
+  background: var(--light-pink);
+  border: 2px dashed var(--hot-pink);
+  border-radius: 11px;
+
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.deletion-modal-warning p {
+  margin: 0;
+}
+
+.deletion-modal-user-step {
+  margin-top: 12px;
+  padding: 10px 12px;
+
+  background: var(--lavender);
+  border-radius: 11px;
+
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.deletion-modal-user-step p {
+  margin: 0;
+}
+
 .deletion-modal-actions {
   display: flex;
   justify-content: flex-end;

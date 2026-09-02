@@ -25,6 +25,31 @@ class ActionCapability:
     ALL = {FULLY_AUTOMATABLE, PARTIALLY_AUTOMATABLE, USER_ACTION_REQUIRED, UNKNOWN}
 
 
+class ExecutionCapability:
+    """What the execution engine will actually DO on approval, for THIS
+    company right now - see deletion_engine.classify_execution_capability.
+    Distinct from ActionCapability above: ActionCapability is a property of
+    the RECIPE (how the method intrinsically works, as researched, stored
+    on DeletionRecipe/Company); ExecutionCapability is computed fresh at
+    approval/execute time from the recipe PLUS what Cookie Monster
+    currently has on hand for this account (e.g. whether gmail.send is
+    enabled) - never stored, so it can never go stale relative to the
+    user's current OAuth grants."""
+    # Cookie Monster can perform the verified deletion mechanism itself,
+    # right now, after explicit user approval.
+    AUTO_EXECUTABLE = "AUTO_EXECUTABLE"
+    # Cookie Monster can prepare/initiate the request, but a human step
+    # (login, MFA, CAPTCHA, identity verification, missing information,
+    # or a not-yet-enabled optional consent) is unavoidably still required.
+    USER_STEP_REQUIRED = "USER_STEP_REQUIRED"
+    # Cookie Monster cannot safely/legitimately execute this mechanism at
+    # all (this slice never does browser automation) - opens the verified
+    # official route with instructions instead.
+    MANUAL_HANDOFF = "MANUAL_HANDOFF"
+
+    ALL = {AUTO_EXECUTABLE, USER_STEP_REQUIRED, MANUAL_HANDOFF}
+
+
 class DeletionStatus:
     NOT_STARTED = "NOT_STARTED"
     METHOD_LOOKUP = "METHOD_LOOKUP"
@@ -204,12 +229,25 @@ class EventType:
     # RESEARCH_FAILED on purpose: this must never count toward a
     # recipe's research_attempts or the NO_METHOD_FOUND threshold.
     RESEARCH_DEFERRED = "RESEARCH_DEFERRED"
+    # Recorded BEFORE the risky network call (Gmail send), and committed
+    # immediately - so an attempt is auditable even if the process crashes
+    # before EMAIL_SENT/FAILED is ever recorded. Paired with
+    # DeletionStatus.SUBMITTING - see deletion_engine.py and
+    # recover_stuck_submitting().
+    EXECUTION_STARTED = "EXECUTION_STARTED"
+    # A previously-started execution attempt (EXECUTION_STARTED/SUBMITTING)
+    # was found still unresolved at process startup - the process that
+    # started it died before recording EMAIL_SENT or FAILED, so whether the
+    # email actually went out is genuinely unknown. Recorded by
+    # recover_stuck_submitting(); never auto-resolved either way.
+    EXECUTION_INTERRUPTED = "EXECUTION_INTERRUPTED"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
         COMPANY_ACKNOWLEDGED, VERIFICATION_REQUESTED, ADDITIONAL_INFO_REQUESTED,
         COMPLETION_CONFIRMED, USER_MARKED_COMPLETE, REQUEST_REJECTED, FAILED, RETRY,
         RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED, RESEARCH_DEFERRED,
+        EXECUTION_STARTED, EXECUTION_INTERRUPTED,
     }
 
 
