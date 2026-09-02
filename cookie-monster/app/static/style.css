@@ -452,6 +452,22 @@ button:active,
     1px 1px 0 rgba(93, 45, 75, 0.18);
 }
 
+/* appearance:none above strips the browser's own dimmed look for a
+   disabled button, so without this a disabled .btn (e.g. the "Researching…"
+   placeholder) would be indistinguishable from a live one - clickable-
+   looking but silently doing nothing on click. */
+button:disabled,
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button:disabled:hover,
+.btn:disabled:hover {
+  transform: none;
+  box-shadow: 3px 3px 0 rgba(93, 45, 75, 0.18);
+}
+
 /* CONFIRM */
 
 .btn-confirm {

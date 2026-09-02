@@ -102,12 +102,20 @@
     <div class="deletion-block deletion-{{ c.deletion_status|lower }}">
       {% if c.deletion_status == "NOT_STARTED" %}
         <p class="deletion-line">🔍 Not started.</p>
-        <form method="post" action="/api/companies/{{ c.id }}/deletion/research">
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/research" id="research-form-{{ c.id }}" data-company-id="{{ c.id }}">
           <button type="submit" class="btn btn-secondary btn-small">Research deletion method</button>
         </form>
 
       {% elif c.deletion_status == "METHOD_LOOKUP" %}
         <p class="deletion-line">⏳ Researching…</p>
+        {# No form here on purpose - a fresh attempt is already running for
+           this company (see deletion_resolver.py's per-domain in-flight
+           guard). A live-but-inert placeholder, rather than nothing, so a
+           button that visually disappears between page loads never reads
+           as "the button did nothing" - it's disabled and explicitly
+           labeled instead of just absent. #}
+        <button type="button" class="btn btn-secondary btn-small" disabled
+          title="A research attempt for this company is already running.">Researching…</button>
 
       {% elif c.deletion_status == "UNKNOWN" %}
         {% set info = research_info.get(c.id) %}
@@ -123,7 +131,7 @@
           <a href="{{ info.blocked_url }}" target="_blank" rel="noopener">{{ info.blocked_url }}</a></p>
         {% endif %}
         {% endif %}
-        <form method="post" action="/api/companies/{{ c.id }}/deletion/research">
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/research" id="research-form-{{ c.id }}" data-company-id="{{ c.id }}">
           <button type="submit" class="btn btn-secondary btn-small">Research deletion method</button>
         </form>
 
@@ -141,7 +149,7 @@
           <a href="{{ info.blocked_url }}" target="_blank" rel="noopener">{{ info.blocked_url }}</a></p>
         {% endif %}
         {% endif %}
-        <form method="post" action="/api/companies/{{ c.id }}/deletion/research">
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/research" id="research-form-{{ c.id }}" data-company-id="{{ c.id }}">
           <button type="submit" class="btn btn-secondary btn-small">Try again</button>
         </form>
 
