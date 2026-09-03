@@ -125,7 +125,7 @@ def test_delete_my_data_button_lives_inside_its_own_card(client_db):
     "deletion_status,expect_primary_action_text",
     [
         (DeletionStatus.NOT_STARTED, "Find deletion method"),
-        (DeletionStatus.UNKNOWN, "Find deletion method"),
+        (DeletionStatus.UNKNOWN, "Search again"),
         (DeletionStatus.READY, "Delete my data"),
     ],
 )
@@ -156,7 +156,7 @@ def test_completed_company_has_no_large_primary_cta(client_db):
     card = _card_for(soup, company.id)
     current_state = card.find(class_="current-state")
     assert current_state.find(class_="btn-primary") is None
-    assert "completed" in current_state.get_text().lower()
+    assert "done" in current_state.get_text().lower()
 
 
 def test_status_badge_present_with_text_not_color_only(client_db):
@@ -174,13 +174,14 @@ def test_progress_stepper_marks_correct_stage(client_db):
     company = _company(client_db, "Widget Co", "widgetco.com", deletion_status=DeletionStatus.READY, deletion_verified=True)
     soup = _get_dashboard_soup()
     card = _card_for(soup, company.id)
-    stepper = card.find(class_="progress-stepper")
-    assert stepper is not None
-    steps = stepper.find_all("li")
-    assert [s.get_text(strip=True) for s in steps] == ["Found", "Confirmed", "Method ready", "Sent", "Waiting", "Deleted"]
-    current = stepper.find(class_="step-current")
+    track = card.find(class_="progress-track")
+    assert track is not None
+    labels = card.find(class_="track-labels")
+    assert labels is not None
+    assert [s.get_text(strip=True) for s in labels.find_all("span")] == ["Found", "Confirmed", "Ready", "Requested", "Done"]
+    current = labels.find(class_="is-current")
     assert current is not None
-    assert "Method ready" in current.get_text()
+    assert "Ready" in current.get_text()
 
 
 def test_pending_company_shows_stepper_at_found_stage():
@@ -209,9 +210,11 @@ def test_pending_company_shows_stepper_at_found_stage():
     resp = client.get("/dashboard")
     soup = BeautifulSoup(resp.text, "html.parser")
     card = _card_for(soup, company_id)
-    stepper = card.find(class_="progress-stepper")
-    assert stepper is not None
-    current = stepper.find(class_="step-current")
+    track = card.find(class_="progress-track")
+    assert track is not None
+    labels = card.find(class_="track-labels")
+    assert labels is not None
+    current = labels.find(class_="is-current")
     assert current is not None
     assert "Found" in current.get_text(strip=True)
 
@@ -242,7 +245,7 @@ def test_rejected_company_has_no_progress_stepper():
     resp = client.get("/dashboard")
     soup = BeautifulSoup(resp.text, "html.parser")
     card = _card_for(soup, company_id)
-    assert card.find(class_="progress-stepper") is None
+    assert card.find(class_="progress-track") is None
 
 
 def test_dashboard_progress_summary_uses_real_counts_only(client_db):

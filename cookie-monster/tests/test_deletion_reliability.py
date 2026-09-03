@@ -357,10 +357,10 @@ def test_dashboard_renders_all_distinct_research_states(client_db):
     assert resp.status_code == 200
     text = resp.text
 
-    assert "Not started." in text
-    assert "Researching…" in text
+    assert "Deletion method not found yet" in text
+    assert "Searching…" in text
     assert "Retry scheduled" in text
-    assert "No official method found" in text
+    assert "Couldn't find a deletion method" in text
     assert "Deletion method ready" in text
 
 
@@ -386,7 +386,7 @@ def test_dashboard_shows_attempt_count_and_retry_timing(client_db):
     client = TestClient(app, base_url="http://localhost:8000")
     resp = client.get("/dashboard")
     text = resp.text
-    assert "attempt 2 of" in text
+    assert "tried 2 of" in text
     assert last_attempted.strftime("%b %d, %Y") in text
     assert "find an official deletion/privacy page" in text
     # No raw exception dumps or secrets - only the safe category label.

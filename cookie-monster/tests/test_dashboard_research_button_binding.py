@@ -145,7 +145,7 @@ def test_method_lookup_shows_an_explicit_inert_placeholder_not_a_silent_gap(clie
 
     assert card.find("form", attrs={"action": f"/api/companies/{company.id}/deletion/research"}) is None
 
-    placeholder = card.find("button", string=lambda s: s and "Researching" in s)
+    placeholder = card.find("button", string=lambda s: s and "Searching" in s)
     assert placeholder is not None
     assert placeholder.has_attr("disabled")
     assert placeholder.get("type") == "button"  # never "submit" - must be structurally unable to post
@@ -163,4 +163,4 @@ def test_no_method_found_try_again_form_is_scoped_and_enabled(client_db):
     button = form.find("button", attrs={"type": "submit"})
     assert button is not None
     assert not button.has_attr("disabled")
-    assert "Try again" in button.get_text()
+    assert "Search again" in button.get_text()

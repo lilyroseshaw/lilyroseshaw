@@ -43,6 +43,15 @@
   --radius-lg: 22px;
   --radius-md: 15px;
   --radius-sm: 10px;
+
+  /* Spacing scale - every margin/gap/padding in the company-card system
+     below is one of these, never an arbitrary one-off value. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
 }
 
 /* =========================
@@ -136,7 +145,7 @@ a:hover {
    ========================= */
 
 .container {
-  width: min(900px, calc(100% - 32px));
+  width: min(760px, calc(100% - 32px));
   margin: 0 auto;
   position: relative;
   z-index: 1;
@@ -149,7 +158,7 @@ a:hover {
 
 .topbar {
   text-align: center;
-  padding: 44px 20px 30px;
+  padding: 22px 20px 14px;
 }
 
 .wordmark {
@@ -172,7 +181,7 @@ a:hover {
     "Arial Black",
     monospace;
 
-  font-size: clamp(32px, 6vw, 54px);
+  font-size: clamp(24px, 4vw, 36px);
   font-weight: 1000;
   line-height: 1;
 
@@ -184,16 +193,16 @@ a:hover {
     -2px 0 var(--surface),
     0 2px var(--surface),
     0 -2px var(--surface),
-    4px 4px 0 var(--lavender),
-    7px 7px 0 var(--yellow);
+    3px 3px 0 var(--lavender),
+    5px 5px 0 var(--yellow);
 
   transform: skew(-2deg);
 }
 
 .wordmark-cookie {
-  width: 60px;
-  height: 60px;
-  flex: 0 0 60px;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
 
   image-rendering: pixelated;
 
@@ -219,7 +228,7 @@ a:hover {
 
 .tagline {
   display: block;
-  margin-top: 14px;
+  margin-top: 8px;
 
   color: var(--sage-deep);
   font-size: 16px;
@@ -263,11 +272,11 @@ a:hover {
 
 .hero {
   text-align: center;
-  margin-bottom: 22px;
+  margin-bottom: var(--sp-4);
 }
 
 .hero h1 {
-  font-size: clamp(22px, 4vw, 30px);
+  font-size: clamp(19px, 3vw, 24px);
   font-weight: 900;
   color: var(--ink);
 }
@@ -312,8 +321,8 @@ a:hover {
     0 0 0 2px var(--border-soft),
     var(--shadow-md);
 
-  padding: 22px;
-  margin-bottom: 20px;
+  padding: var(--sp-4);
+  margin-bottom: var(--sp-4);
 }
 
 .card.warning {
@@ -449,7 +458,7 @@ textarea:focus {
 .progress-summary-stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 22px;
+  gap: var(--sp-5);
   justify-content: center;
 }
 
@@ -461,7 +470,7 @@ textarea:focus {
 }
 
 .stat-num {
-  font-size: 26px;
+  font-size: 21px;
   font-weight: 1000;
   color: var(--ink);
   font-variant-numeric: tabular-nums;
@@ -478,8 +487,8 @@ textarea:focus {
 .stat-done .stat-num { color: var(--sage-deep); }
 
 .progress-summary-bar {
-  height: 10px;
-  margin-top: 16px;
+  height: 8px;
+  margin-top: var(--sp-3);
   border-radius: 999px;
   background: var(--surface-alt);
   border: 1px solid var(--border-soft);
@@ -494,24 +503,24 @@ textarea:focus {
 }
 
 .progress-summary-caption {
-  margin: 8px 0 0;
+  margin: var(--sp-2) 0 0;
   text-align: center;
   color: var(--muted);
   font-size: 12px;
 }
 
 /* =========================
-   COMPANY CARD - one self-contained object per company. Strong outer
-   boundary + generous inter-card spacing so ownership is never ambiguous;
-   internal sections (current-state, details) get their own subtle panel
-   treatment instead of a mere divider line, so nothing inside ever reads
-   as if it could belong to a neighboring card.
+   COMPANY CARD - one self-contained object per company. A strong outer
+   boundary plus a clear gap between cards establishes ownership (never a
+   dotted internal rule); everything INSIDE stays tight and flows in one
+   column so a company with 50-200 siblings is still scannable. Target:
+   ~180-260px collapsed height, several visible per laptop viewport.
    ========================= */
 
 .company-list {
   display: flex;
   flex-direction: column;
-  gap: 26px;
+  gap: var(--sp-4);
 }
 
 .company-card {
@@ -519,13 +528,13 @@ textarea:focus {
 
   background: var(--surface);
   border: 3px solid white;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
 
   box-shadow:
     0 0 0 2px var(--border),
-    var(--shadow-lg);
+    var(--shadow-md);
 
-  padding: 22px;
+  padding: var(--sp-4);
 
   transition: box-shadow 0.15s ease;
 }
@@ -533,162 +542,216 @@ textarea:focus {
 .company-card.just-updated {
   box-shadow:
     0 0 0 3px var(--sky-deep),
-    var(--shadow-lg);
+    var(--shadow-md);
 }
 
-.card-header {
+.card-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 
-.card-identity h3 {
-  font-size: 19px;
+.card-id h3 {
+  font-size: 17px;
   font-weight: 900;
   color: var(--ink);
+  line-height: 1.2;
 }
 
-.card-identity .domain {
+.card-id .domain {
+  margin: 1px 0 0;
   color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* Compact progress track - a connected dot-line, not a vertical list.
+   Purely a plain-language grouping of existing DeletionStatus values
+   (see main.py's _stage_index_for_company) - never a new source of truth. */
+.progress-track {
+  display: flex;
+  align-items: center;
+  margin-top: var(--sp-2);
+}
+
+.track-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+  flex: none;
+}
+
+.track-line {
+  flex: 1 1 auto;
+  height: 2px;
+  background: var(--border);
+  margin: 0 1px;
+}
+
+.track-dot.is-done, .track-line.is-done { background: var(--sage-deep); }
+.track-dot.is-current {
+  background: var(--orange-deep);
+  box-shadow: 0 0 0 3px rgba(240, 163, 95, 0.3);
+}
+/* Arriving at the FINAL stage ("Done") is a completion, not an in-progress
+   state - the generic orange "current" treatment would read as "needs
+   attention" right when a company is actually finished. */
+.track-dot.is-current:last-child {
+  background: var(--sage-deep);
+  box-shadow: 0 0 0 3px rgba(63, 122, 69, 0.3);
+}
+
+.track-labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+}
+
+.track-labels span {
+  font-size: 9px;
+  font-weight: 800;
+  color: var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.track-labels .is-done { color: var(--sage-deep); }
+.track-labels .is-current { color: var(--orange-deep); }
+.track-labels span.is-current:last-child { color: var(--sage-deep); }
+
+.card-main {
+  margin-top: var(--sp-3);
+}
+
+/* --- Pending/rejected: the confirmation micro-flow --- */
+
+.match-block { margin: 0; }
+
+.match-label {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  color: var(--sage-deep);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.match-why {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: var(--sp-1);
+  border-radius: 50%;
+  background: var(--border-soft);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  cursor: help;
+}
+
+.match-reason {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.match-ask {
+  margin: var(--sp-2) 0 var(--sp-2);
+  color: var(--ink);
   font-size: 13px;
   font-weight: 700;
 }
 
-/* Lightweight progress stepper - a plain-language "you are here" strip,
-   not a new source of truth: purely a grouping of the same DeletionStatus
-   values already shown elsewhere (see main.py's _stage_index_for_company).
-   */
-.progress-stepper {
+.action-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 14px;
-
-  list-style: none;
-  margin: 12px 0 0;
-  padding: 0;
+  gap: var(--sp-2);
 }
 
-.progress-stepper li {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.action-row form { margin: 0; }
 
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--border);
-}
+/* --- Confirmed: the current-state line + primary action. No nested
+   panel/background here on purpose - one flat surface reads as "still the
+   same card", and it's what keeps the collapsed height in budget. --- */
 
-.step-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentColor;
-  flex: none;
-}
-
-.progress-stepper .step-done { color: var(--sage-deep); }
-.progress-stepper .step-current {
-  color: var(--orange-deep);
-}
-.progress-stepper .step-current .step-dot {
-  box-shadow: 0 0 0 4px rgba(240, 163, 95, 0.25);
-}
-.progress-stepper .step-pending { color: var(--border); }
-
-/* Arriving at the FINAL stage ("Deleted") is a completion, not an
-   in-progress state - the generic orange "current" treatment above would
-   read as "needs attention" right when a company is actually done, which
-   contradicts its own success-toned status badge. */
-.progress-stepper li:last-child.step-current {
-  color: var(--sage-deep);
-}
-.progress-stepper li:last-child.step-current .step-dot {
-  box-shadow: 0 0 0 4px rgba(63, 122, 69, 0.25);
-}
-
-.card-body {
-  margin-top: 16px;
-}
-
-.badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-
-.review-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 6px;
-}
-
-.review-actions form { margin: 0; }
-
-.review-actions-secondary .btn {
-  padding: 7px 13px;
-  font-size: 13px;
-}
-
-/* The "current state" panel - a distinct surface WITHIN the card, never a
-   bare horizontal rule, so its contents (including Check for response /
-   Delete my data) can never read as floating between two cards. */
-.current-state {
-  margin-top: 14px;
-  padding: 16px;
-
-  background: var(--surface-alt);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-soft);
-}
+.current-state { margin: 0; }
 
 .state-line {
-  margin: 0 0 8px;
+  margin: 0 0 var(--sp-2);
   font-weight: 800;
   color: var(--ink);
+  line-height: 1.35;
 }
 
-.state-line:last-child { margin-bottom: 0; }
+.state-line:last-of-type { margin-bottom: var(--sp-3); }
+
+.state-meta {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
 
 .state-success { color: var(--sage-deep); }
 .state-warning { color: var(--orange-deep); }
 .state-danger { color: var(--red-deep); }
 
 .state-celebrate {
-  animation: pop-in 0.35s ease;
+  animation: pop-in 0.3s ease;
 }
 
 @keyframes pop-in {
-  0% { transform: scale(0.92); opacity: 0.4; }
-  60% { transform: scale(1.03); opacity: 1; }
+  0% { transform: scale(0.94); opacity: 0.5; }
+  60% { transform: scale(1.02); opacity: 1; }
   100% { transform: scale(1); }
 }
 
 .state-detail {
-  margin: 0 0 10px;
+  margin: 0 0 var(--sp-2);
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
 }
 
 .state-detail:last-child { margin-bottom: 0; }
 
 .state-quote {
-  padding: 8px 10px;
-  background: white;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-alt);
   border-radius: var(--radius-sm);
   border: 1px dashed var(--border);
   font-style: italic;
 }
 
+/* Small inline loading spinner - shown next to a state line for a
+   currently-running background process (e.g. METHOD_LOOKUP), and can be
+   reused by JS for an in-flight button label. Frozen (not spun) under
+   prefers-reduced-motion via the global override above. */
+.spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 2px;
+  border: 2px solid var(--border-soft);
+  border-top-color: var(--orange-deep);
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .mark-completed-form {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--sp-2);
   align-items: center;
-  margin-top: 10px;
+  margin-top: var(--sp-2);
 }
 
 .mark-completed-form input[type="text"] {
@@ -696,8 +759,8 @@ textarea:focus {
 }
 
 .duplicate-warning {
-  margin-top: 12px;
-  padding: 12px;
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
 
   background: white;
   border: 2px dashed var(--red);
@@ -705,16 +768,16 @@ textarea:focus {
 }
 
 .duplicate-warning p {
-  margin: 0 0 8px;
+  margin: 0 0 var(--sp-2);
   color: var(--ink);
   font-weight: 800;
 }
 
 .check-response-result {
-  margin: 10px 0 0;
-  padding: 8px 12px;
+  margin: var(--sp-2) 0 0;
+  padding: var(--sp-2) var(--sp-3);
 
-  background: white;
+  background: var(--surface-alt);
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-soft);
 
@@ -724,59 +787,53 @@ textarea:focus {
 }
 
 .attach-thread-block {
-  margin-top: 12px;
+  margin-top: var(--sp-2);
 }
 
 .attach-preview-line {
-  margin: 0 0 4px;
+  margin: 0 0 var(--sp-1);
   font-size: 13px;
   color: var(--ink);
 }
 
 .attach-error { color: var(--red-deep); }
 
-/* Secondary, lower-frequency actions (mark completed, attach thread) live
-   behind a small expandable disclosure so the current-state panel stays
-   scannable - the primary action is never competing with them visually. */
+/* Secondary, lower-frequency actions (mark completed, attach thread, undo)
+   live behind a small expandable disclosure so the default card view is
+   never competing for attention with things most users need rarely. */
 .secondary-action {
-  margin-top: 10px;
-  padding: 10px 12px;
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
 
-  background: white;
+  background: var(--surface-alt);
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border-soft);
 }
 
 .secondary-action summary {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 800;
   color: var(--muted);
 }
 
 .secondary-action[open] summary {
-  margin-bottom: 8px;
+  margin-bottom: var(--sp-2);
 }
 
 /* Collapsed-by-default technical details (evidence, correction form,
-   merge) - kept OUT of the scannable default view of the card. */
+   merge, undo controls) - kept OUT of the scannable default view. */
 .card-details {
-  margin-top: 14px;
-  padding: 12px 14px;
-
-  background: transparent;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-md);
+  margin-top: var(--sp-3);
 }
 
 .card-details summary {
   cursor: pointer;
   color: var(--muted);
   font-weight: 800;
-  font-size: 13px;
+  font-size: 12.5px;
 }
 
 .card-details[open] summary {
-  margin-bottom: 10px;
+  margin-bottom: var(--sp-3);
 }
 
 .card-details p, .card-details ul {
@@ -785,7 +842,7 @@ textarea:focus {
 }
 
 .evidence-line, .dates {
-  margin: 0 0 8px;
+  margin: 0 0 var(--sp-2);
   color: var(--muted);
   font-size: 13px;
 }
@@ -793,15 +850,15 @@ textarea:focus {
 .correct-form {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--sp-2);
   align-items: flex-end;
-  margin: 10px 0;
+  margin: var(--sp-2) 0;
 }
 
 .correct-form label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp-1);
   font-size: 12px;
   font-weight: 700;
   color: var(--muted);
@@ -810,7 +867,7 @@ textarea:focus {
 .merge-checkbox {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-1);
   font-size: 13px;
   color: var(--muted);
   font-weight: 700;
@@ -1077,15 +1134,16 @@ button:disabled:hover,
     width: calc(100% - 20px);
   }
 
-  .card-header {
+  .card-head {
     flex-direction: column;
     align-items: flex-start;
-    gap: 8px;
+    gap: var(--sp-1);
   }
 
-  .review-actions .btn,
+  .action-row .btn,
   .current-state > .btn,
-  .current-state > form > .btn {
+  .current-state > form > .btn,
+  .current-state > a.btn {
     width: 100%;
   }
 
@@ -1096,5 +1154,11 @@ button:disabled:hover,
 
   .toolbar form {
     width: 100%;
+  }
+
+  .progress-summary-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--sp-4) var(--sp-3);
   }
 }

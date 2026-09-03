@@ -134,21 +134,31 @@ _SENT_OR_LATER_STATUSES = {
     DeletionStatus.SUBMITTED, DeletionStatus.USER_ACTION_REQUIRED, DeletionStatus.IN_PROGRESS,
     DeletionStatus.VERIFICATION_NEEDED, DeletionStatus.MORE_INFO_REQUIRED, DeletionStatus.UNKNOWN_RESPONSE,
 }
-
-# The linear progress model shown in each confirmed company's card - see
-# dashboard.html's "progress-stepper". Purely a presentation grouping of
-# EXISTING DeletionStatus values (see deletion_constants.py) - never a new
-# source of truth, and never implies a stage happened without the
-# corresponding backend status actually being set. REJECTED (the company
-# itself declined) and Company.status == "rejected" (a discovery-level
-# non-company) are both terminal/off-pipeline and return None - they get
-# their own badge treatment instead of a stepper position.
-_STAGE_LABELS = ["Found", "Confirmed", "Method ready", "Sent", "Waiting", "Deleted"]
-
-_STAGE_2_STATUSES = {DeletionStatus.READY, DeletionStatus.FAILED}
-_STAGE_1_STATUSES = {
+# "Needs a look" - confirmed, but not yet actionable-ready or already
+# underway. Used both for the dashboard's "Needs action" filter and stage 1.
+_METHOD_NOT_READY_STATUSES = {
     DeletionStatus.NOT_STARTED, DeletionStatus.METHOD_LOOKUP, DeletionStatus.UNKNOWN, DeletionStatus.NO_METHOD_FOUND,
 }
+_METHOD_READY_STATUSES = {DeletionStatus.READY, DeletionStatus.FAILED}
+# Everything a user could conceivably need to DO something about right now
+# - shown under the "Needs action" filter. Company.status == "pending" (not
+# yet reviewed) is handled separately in the query itself, since it's a
+# different column.
+_ACTION_DELETION_STATUSES = _METHOD_NOT_READY_STATUSES | _METHOD_READY_STATUSES
+
+# The linear progress model shown in each confirmed company's card - see
+# dashboard.html's "progress-track". Purely a presentation grouping of
+# EXISTING DeletionStatus values (deletion_constants.py) - never a new
+# source of truth, and never implies a stage happened without the
+# corresponding backend status actually being set. "Waiting" is
+# deliberately NOT its own milestone here - it's a transient sub-state of
+# "Requested" shown in the current-state panel's own text, not a separate
+# step (5 stages reads faster than 6, and nothing is lost - the panel
+# already says exactly what's being waited on). REJECTED (the company
+# itself declined) and Company.status == "rejected" (a discovery-level
+# non-company) are both terminal/off-pipeline and return None - they get
+# their own badge treatment instead of a place on the track.
+_STAGE_LABELS = ["Found", "Confirmed", "Ready", "Requested", "Done"]
 
 
 def _stage_index_for_company(c: Company) -> int | None:
@@ -156,34 +166,35 @@ def _stage_index_for_company(c: Company) -> int | None:
         return 0
     if c.status == "rejected":
         return None
-    if c.deletion_status in _STAGE_1_STATUSES:
+    if c.deletion_status in _METHOD_NOT_READY_STATUSES:
         return 1
-    if c.deletion_status in _STAGE_2_STATUSES:
+    if c.deletion_status in _METHOD_READY_STATUSES:
         return 2
     if c.deletion_status in _SENT_OR_LATER_STATUSES:
-        return 3 if c.deletion_status in (DeletionStatus.SUBMITTED, DeletionStatus.USER_ACTION_REQUIRED) else 4
+        return 3
     if c.deletion_status == DeletionStatus.COMPLETED:
-        return 5
+        return 4
     return None  # DeletionStatus.REJECTED - the company itself declined; a terminal, off-pipeline outcome
 
 
 # (badge_text, badge_tone) - tone drives color AND is always paired with
 # distinct text, never color alone (see the accessibility requirement that
-# status must never be color-only).
+# status must never be color-only). Plain language throughout - no
+# internal state-machine names (no "verification state", "resolver", etc).
 _STATUS_BADGES = {
     DeletionStatus.NOT_STARTED: ("New", "neutral"),
-    DeletionStatus.METHOD_LOOKUP: ("Researching", "info"),
+    DeletionStatus.METHOD_LOOKUP: ("Searching", "info"),
     DeletionStatus.UNKNOWN: ("Retrying", "warning"),
     DeletionStatus.NO_METHOD_FOUND: ("Needs a look", "warning"),
     DeletionStatus.READY: ("Ready", "success"),
     DeletionStatus.USER_ACTION_REQUIRED: ("Action needed", "warning"),
     DeletionStatus.SUBMITTED: ("Sent", "info"),
     DeletionStatus.SUBMITTING: ("Sending", "info"),
-    DeletionStatus.IN_PROGRESS: ("In progress", "info"),
-    DeletionStatus.VERIFICATION_NEEDED: ("Verify", "warning"),
-    DeletionStatus.MORE_INFO_REQUIRED: ("Info needed", "warning"),
+    DeletionStatus.IN_PROGRESS: ("Waiting", "info"),
+    DeletionStatus.VERIFICATION_NEEDED: ("Needs you", "warning"),
+    DeletionStatus.MORE_INFO_REQUIRED: ("Needs you", "warning"),
     DeletionStatus.UNKNOWN_RESPONSE: ("Review reply", "warning"),
-    DeletionStatus.COMPLETED: ("Deleted", "success"),
+    DeletionStatus.COMPLETED: ("Done", "success"),
     DeletionStatus.REJECTED: ("Declined", "danger"),
     DeletionStatus.FAILED: ("Failed", "danger"),
 }
@@ -191,24 +202,49 @@ _STATUS_BADGES = {
 
 def _status_badge_for_company(c: Company) -> tuple[str, str]:
     if c.status == "pending":
-        return ("Needs review", "neutral")
+        return ("New match", "neutral")
     if c.status == "rejected":
         return ("Not tracked", "neutral")
     return _STATUS_BADGES.get(c.deletion_status, ("Unknown", "neutral"))
 
 
+# What c.confidence ("high"/"medium"/"low") actually measures (see
+# aggregator._score_confidence): how much/what KIND of email evidence
+# pointed at this domain - never identity-matching, never a guarantee.
+# User-facing language says exactly that, and never overstates it.
+_CONFIDENCE_LABELS = {
+    "high": ("Likely match", "We found strong evidence (several emails, or a receipt/account signal) linking this company to you."),
+    "medium": ("Possible match", "We found one solid signal (like a receipt or account email) - worth a quick look."),
+    "low": ("Needs review", "We found limited evidence so far - take a look before confirming."),
+}
+
+# What relationship_type actually is (see classifier.py): the dominant
+# TYPE of email evidence found for this domain - shown as a plain-language
+# reason, not the raw enum value.
+_RELATIONSHIP_LABELS = {
+    "transactional": "Found through a purchase or order",
+    "account": "Found through an account signup",
+    "subscription": "Found through a subscription",
+    "marketing": "Found through a marketing email",
+    "mixed": "Found through several kinds of emails",
+}
+
+
 def _card_meta_for_companies(companies: list[Company]) -> dict[int, dict]:
-    """Everything the card shell (header badge + progress stepper) needs,
-    computed once per dashboard render - kept out of the template so the
-    stage/badge mapping has exactly one home. See _stage_index_for_company
-    and _status_badge_for_company above."""
+    """Everything the card shell (header badge, progress track, plain-
+    language confidence/reason) needs, computed once per dashboard render -
+    kept out of the template so each mapping has exactly one home."""
     meta = {}
     for c in companies:
         badge_text, badge_tone = _status_badge_for_company(c)
+        confidence_label, confidence_explainer = _CONFIDENCE_LABELS.get(c.confidence, (c.confidence, ""))
         meta[c.id] = {
             "stage_index": _stage_index_for_company(c),
             "badge_text": badge_text,
             "badge_tone": badge_tone,
+            "confidence_label": confidence_label,
+            "confidence_explainer": confidence_explainer,
+            "relationship_label": _RELATIONSHIP_LABELS.get(c.relationship_type, "Found in your inbox"),
         }
     return meta
 
@@ -533,7 +569,23 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
     db = get_session()
     try:
         query = db.query(Company)
-        if status in ("pending", "confirmed", "rejected"):
+        if status == "action":
+            # Anything a click could move forward right now: not-yet-
+            # reviewed matches, plus confirmed companies whose method isn't
+            # ready or IS ready to send - never anything already in flight
+            # or finished, which belong under Waiting/Done instead.
+            query = query.filter(
+                (Company.status == "pending")
+                | ((Company.status == "confirmed") & Company.deletion_status.in_(_ACTION_DELETION_STATUSES))
+            )
+        elif status == "waiting":
+            query = query.filter(Company.status == "confirmed", Company.deletion_status.in_(_SENT_OR_LATER_STATUSES))
+        elif status == "done":
+            query = query.filter(Company.status == "confirmed", Company.deletion_status == DeletionStatus.COMPLETED)
+        elif status in ("pending", "confirmed", "rejected"):
+            # Kept for any existing link/bookmark using the older
+            # review-status filter values - the visible dropdown no longer
+            # offers these directly (see dashboard.html's toolbar).
             query = query.filter(Company.status == status)
         if q:
             like = f"%{q.lower()}%"
