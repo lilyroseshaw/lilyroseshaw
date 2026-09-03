@@ -1,44 +1,83 @@
 /* =========================
    DESIGN TOKENS
    =========================
-   A cozy, nostalgic-game palette (not pink-dominant) - warm parchment
-   surfaces, sky/sage/yellow/orange/lavender as purposeful accents, pink
-   kept as one accent among several rather than the whole identity. Status
-   tones (info/success/warning/danger) are used consistently everywhere a
-   state is shown, always paired with an icon/word - never color alone. */
+   A light, fresh, "nostalgic digital game world" identity - NOT an
+   artisan-bakery palette. Pale cool blue-lavender surfaces, a friendly
+   blue-violet as the one PRIMARY color, teal/lavender/pink/aqua as small
+   playful accents, and status tones (info/success/warning/danger) each
+   with a distinct, restrained hue used consistently everywhere a state is
+   shown - always paired with an icon/word, never color alone. Brown is
+   kept ONLY for literal cookie/bakery artwork (the wordmark's cookie
+   icons) - it never defines backgrounds, borders, ink, or buttons. No
+   scientific claim is made about any "universal" palette; this optimizes
+   for readability, accessible contrast, gender-neutral presentation, and
+   restrained saturation. */
 :root {
-  /* Surfaces */
-  --bg-base: #f6efe0;
-  --bg-base-2: #eef2e3;
-  --surface: #fffcf5;
-  --surface-alt: #f4ecda;
-  --border: #ddc99b;
-  --border-soft: #ead9ac;
+  /* Surfaces - pale cool neutral, not warm beige */
+  --bg-base: #eef1f9;
+  --bg-base-2: #e5eaf6;
+  --surface: #ffffff;
+  --surface-alt: #f3f5fb;
+  --border: #d6dcee;
+  --border-soft: #e4e8f6;
 
-  /* Ink */
-  --ink: #3c2f22;
-  --muted: #8a7960;
+  /* Ink - cool dark slate, not brown */
+  --ink: #262b40;
+  --muted: #565d7a;
 
-  /* Accents - each with a "deep" variant for text-on-light-fill use */
-  --sky: #9adcef;
-  --sky-deep: #2e7ea6;
-  --sage: #a7cf9e;
-  --sage-deep: #3f7a45;
-  --yellow: #f4d35e;
-  --yellow-deep: #8a6a12;
-  --orange: #f0a35f;
-  --orange-deep: #b8631f;
-  --red: #e08267;
-  --red-deep: #a8432a;
-  --lavender: #c9b8e8;
-  --lavender-deep: #6a4fa0;
+  /* Accents - each with a "deep" (text-on-tint) and "tint" (pale badge
+     background) variant, both verified against WCAG AA (>=4.5:1) for the
+     deep-on-tint and white-on-deep pairings used below. --primary is the
+     one friendly saturated-but-not-neon blue-violet used for primary
+     actions; --sage/green is reserved for success/completion so it never
+     doubles as "primary" and "done" at once. */
+  --primary: #4f63e0;
+  --primary-deep: #3745a8;
+  --primary-tint: #e4e7fc;
+
+  --sky: #7fc4f2;
+  --sky-deep: #2569ac;
+  --sky-tint: #dceefb;
+
+  --teal: #45c2b1;
+  --teal-deep: #19685e;
+  --teal-tint: #dbf3ef;
+
+  --sage: #74c893;
+  --sage-deep: #257048;
+  --sage-tint: #ddf3e5;
+
+  --yellow: #f6cf5c;
+  --yellow-deep: #7d5c0c;
+  --yellow-tint: #fbf1d6;
+
+  /* "attention" gold/amber - sparing use, replaces the old dominant orange */
+  --orange: #eeb45e;
+  --orange-deep: #7d5412;
+  --orange-tint: #fbead0;
+
+  --red: #f2705c;
+  --red-deep: #9c3423;
+  --red-tint: #fbdcd6;
+
+  /* Playful accents - small amounts only, never the dominant chrome. */
+  --lavender: #b3a3ef;
+  --lavender-deep: #5f45c4;
+  --lavender-tint: #ece7fb;
+
+  --pink: #f0a0cc;
+  --pink-deep: #a13d78;
+  --pink-tint: #fbe3f0;
+
+  --aqua: #7fe0d8;
+  --aqua-deep: #19685e;
+
+  /* Cookie/bakery brown - scoped to literal cookie artwork only. */
   --brown: #8c5a3c;
-  --pink: #ef9dc2;
-  --pink-deep: #c15a8c;
 
-  --shadow-sm: 3px 3px 0 rgba(60, 47, 34, 0.12);
-  --shadow-md: 5px 5px 0 rgba(60, 47, 34, 0.14);
-  --shadow-lg: 7px 7px 0 rgba(60, 47, 34, 0.16);
+  --shadow-sm: 3px 3px 0 rgba(38, 43, 64, 0.10);
+  --shadow-md: 5px 5px 0 rgba(38, 43, 64, 0.12);
+  --shadow-lg: 7px 7px 0 rgba(38, 43, 64, 0.14);
 
   --radius-lg: 22px;
   --radius-md: 15px;
@@ -157,8 +196,70 @@ a:hover {
    ========================= */
 
 .topbar {
+  position: relative;
   text-align: center;
   padding: 22px 20px 14px;
+}
+
+/* Persistent mailbox nav indicator - always reachable, always shows
+   unread count if any, regardless of whether a "You've got mail" banner
+   on the dashboard was dismissed for this page view. */
+.mail-nav {
+  position: absolute;
+  top: 18px;
+  right: 20px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  width: 40px;
+  height: 40px;
+
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+
+  text-decoration: none;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.mail-nav:hover {
+  transform: translate(-1px, -2px);
+  box-shadow: var(--shadow-md);
+}
+
+.mail-nav-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.mail-nav-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+
+  background: var(--red-deep);
+  color: white;
+  border: 2px solid var(--surface);
+  border-radius: 999px;
+
+  font-size: 10px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 500px) {
+  .mail-nav { top: 10px; right: 10px; width: 34px; height: 34px; }
+  .mail-nav-icon { font-size: 15px; }
 }
 
 .wordmark {
@@ -305,6 +406,58 @@ a:hover {
 .scan-summary::after { content: " ✦"; color: var(--sky-deep); }
 
 /* =========================
+   "YOU'VE GOT MAIL" BANNER - a delightful but non-obstructive arrival
+   moment (never a blocking modal), restrained and only ever real: it only
+   ever appears when unread_mail_count > 0, computed from real MailMessage
+   rows (see app/mail.py) - never a manufactured/fake notification.
+   ========================= */
+
+.mail-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+
+  background: linear-gradient(135deg, var(--primary-tint), var(--sky-tint));
+  border: 3px solid white;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 0 2px var(--primary), var(--shadow-md);
+
+  padding: var(--sp-4);
+  margin-bottom: var(--sp-4);
+}
+
+.mail-banner-icon {
+  flex: none;
+  font-size: 32px;
+  line-height: 1;
+}
+
+.mail-banner-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.mail-banner-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 900;
+}
+
+.mail-banner-sub {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mail-banner-actions {
+  flex: none;
+  display: flex;
+  gap: var(--sp-2);
+}
+
+/* =========================
    GENERIC PANEL CARD (index page sections, toolbar, merge bar) -
    distinct from .company-card below, which is a different, more
    structured component.
@@ -374,12 +527,12 @@ a:hover {
   box-shadow: 2px 2px 0 var(--border-soft);
 }
 
-.pill.pending { background: var(--yellow); color: var(--yellow-deep); }
-.pill.confirmed { background: var(--sage); color: var(--sage-deep); }
-.pill.rejected { background: var(--lavender); color: var(--lavender-deep); }
+.pill.pending { background: var(--yellow-tint); color: var(--yellow-deep); }
+.pill.confirmed { background: var(--sage-tint); color: var(--sage-deep); }
+.pill.rejected { background: var(--lavender-tint); color: var(--lavender-deep); }
 
-.pill.confidence-high { background: var(--sage); color: var(--sage-deep); }
-.pill.confidence-medium { background: var(--yellow); color: var(--yellow-deep); }
+.pill.confidence-high { background: var(--sage-tint); color: var(--sage-deep); }
+.pill.confidence-medium { background: var(--yellow-tint); color: var(--yellow-deep); }
 .pill.confidence-low { background: var(--border-soft); color: var(--muted); }
 .pill[class*="rel-"] { background: var(--surface-alt); color: var(--muted); }
 
@@ -400,14 +553,14 @@ a:hover {
   letter-spacing: 0.2px;
   white-space: nowrap;
 
-  box-shadow: 2px 2px 0 rgba(60, 47, 34, 0.1);
+  box-shadow: 2px 2px 0 rgba(38, 43, 64, 0.1);
 }
 
 .status-badge.tone-neutral { background: var(--border-soft); color: var(--muted); }
-.status-badge.tone-info { background: var(--sky); color: var(--sky-deep); }
-.status-badge.tone-warning { background: var(--orange); color: #4a2a0d; }
-.status-badge.tone-success { background: var(--sage); color: var(--sage-deep); }
-.status-badge.tone-danger { background: var(--red); color: white; }
+.status-badge.tone-info { background: var(--sky-tint); color: var(--sky-deep); }
+.status-badge.tone-warning { background: var(--orange-tint); color: var(--orange-deep); }
+.status-badge.tone-success { background: var(--sage-tint); color: var(--sage-deep); }
+.status-badge.tone-danger { background: var(--red-deep); color: white; }
 
 /* =========================
    TOOLBAR / FORM CONTROLS
@@ -914,7 +1067,7 @@ button:hover,
 button:active,
 .btn:active {
   transform: translate(2px, 2px);
-  box-shadow: 1px 1px 0 rgba(60, 47, 34, 0.14);
+  box-shadow: 1px 1px 0 rgba(38, 43, 64, 0.14);
 }
 
 /* appearance:none above strips the browser's own dimmed look for a
@@ -939,11 +1092,13 @@ button:disabled:hover,
   font-size: 13px;
 }
 
-/* PRIMARY - the one hero action per card state */
+/* PRIMARY - the one hero action per card state. Blue-violet, not green -
+   green (--sage) is reserved for success/completion so it never means two
+   things at once. */
 .btn-primary {
   color: white;
-  background: linear-gradient(135deg, var(--sage), var(--sage-deep));
-  box-shadow: 3px 3px 0 #2c5a30, var(--shadow-sm);
+  background: linear-gradient(135deg, var(--primary), var(--primary-deep));
+  box-shadow: 3px 3px 0 #262f7a, var(--shadow-sm);
 }
 
 /* GHOST / SECONDARY - everything else recedes visually. .btn-secondary is
@@ -953,13 +1108,13 @@ button:disabled:hover,
   color: var(--ink);
   background: var(--surface);
   border-color: var(--border-soft);
-  box-shadow: 2px 2px 0 rgba(60, 47, 34, 0.08);
+  box-shadow: 2px 2px 0 rgba(38, 43, 64, 0.08);
 }
 
 .btn-confirm {
   color: white;
   background: linear-gradient(135deg, var(--sky), var(--sky-deep));
-  box-shadow: 3px 3px 0 #235f7c, var(--shadow-sm);
+  box-shadow: 3px 3px 0 #1c4d7d, var(--shadow-sm);
 }
 
 .btn-confirm::before { content: "✦ "; }
@@ -973,13 +1128,13 @@ button:disabled:hover,
 .btn-danger {
   color: white;
   background: linear-gradient(135deg, var(--red), var(--red-deep));
-  box-shadow: 3px 3px 0 #7c2e1a, var(--shadow-sm);
+  box-shadow: 3px 3px 0 #6f2419, var(--shadow-sm);
 }
 
 .btn-delete {
   color: white;
-  background: linear-gradient(135deg, var(--red), #c9502f);
-  box-shadow: 3px 3px 0 #7c2e1a, var(--shadow-sm);
+  background: linear-gradient(135deg, var(--red), var(--red-deep));
+  box-shadow: 3px 3px 0 #6f2419, var(--shadow-sm);
 }
 
 /* =========================
@@ -997,7 +1152,7 @@ button:disabled:hover,
 
   padding: 20px;
 
-  background: rgba(60, 47, 34, 0.45);
+  background: rgba(38, 43, 64, 0.45);
   backdrop-filter: blur(2px);
 }
 
@@ -1125,6 +1280,302 @@ button:disabled:hover,
 }
 
 /* =========================
+   MAILBOX LIST - one envelope per company with tracked correspondence.
+   ========================= */
+
+.mailbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.mail-envelope {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+
+  background: var(--surface);
+  border: 3px solid white;
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 2px var(--border), var(--shadow-sm);
+
+  padding: var(--sp-3) var(--sp-4);
+  text-decoration: none;
+  color: inherit;
+
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.mail-envelope:hover {
+  transform: translate(-1px, -2px);
+  box-shadow: 0 0 0 2px var(--border), var(--shadow-md);
+}
+
+.mail-envelope.is-unread {
+  box-shadow: 0 0 0 2px var(--primary), var(--shadow-sm);
+  background: var(--primary-tint);
+}
+
+.mail-envelope-icon {
+  flex: none;
+  font-size: 22px;
+}
+
+.mail-envelope-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.mail-envelope-name {
+  margin: 0;
+  font-weight: 900;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.mail-envelope-date {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* =========================
+   LETTER VIEW - one company's correspondence, presented as readable
+   letters rather than raw email. Ownership/hierarchy rules from the
+   dashboard card system still apply: one company, one clearly-bounded
+   view, one obvious next action.
+   ========================= */
+
+.letter-head {
+  margin-bottom: var(--sp-4);
+}
+
+.letter-head h1 {
+  font-size: clamp(20px, 3vw, 26px);
+}
+
+.letter-head-sub {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.letter-sent-confirm {
+  margin-bottom: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
+
+  background: var(--sage-tint);
+  border: 2px solid white;
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 2px var(--sage), var(--shadow-sm);
+
+  color: var(--sage-deep);
+  font-weight: 800;
+}
+
+.letter-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-4);
+}
+
+.letter {
+  background: var(--surface);
+  border: 3px solid white;
+  border-radius: var(--radius-md);
+  padding: var(--sp-4);
+  box-shadow: var(--shadow-sm);
+  border-left: 5px solid var(--sky);
+}
+
+.letter-outbound {
+  border-left-color: var(--sage);
+  background: var(--surface-alt);
+}
+
+.letter-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.letter-from {
+  font-weight: 900;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.letter-date {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.letter-subject {
+  margin: 0 0 var(--sp-2);
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.letter-body {
+  margin: 0;
+  color: var(--ink);
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+.letter-understand {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+
+  background: var(--primary-tint);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--primary);
+}
+
+.letter-understand-label {
+  margin: 0 0 2px;
+  color: var(--primary-deep);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.letter-understand-text {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 700;
+}
+
+/* --- Account-deletion-vs-data-deletion warning + choice --- */
+
+.account-warning {
+  background: var(--surface);
+  border: 3px solid white;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 0 2px var(--red), var(--shadow-md);
+  padding: var(--sp-4);
+  margin-bottom: var(--sp-4);
+}
+
+.account-warning-title {
+  margin: 0 0 var(--sp-2);
+  color: var(--red-deep);
+  font-weight: 900;
+  font-size: 16px;
+}
+
+.account-warning-body {
+  margin: 0 0 var(--sp-1);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.account-warning-list {
+  margin: 0 0 var(--sp-2);
+  padding-left: 20px;
+  color: var(--muted);
+}
+
+.account-warning-detail {
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--red-tint);
+  border-radius: var(--radius-sm);
+  color: var(--red-deep);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.account-warning-ask {
+  margin: var(--sp-3) 0 var(--sp-2);
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.letter-respond-draft {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3);
+
+  background: var(--surface-alt);
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-md);
+
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+
+.letter-respond-label {
+  margin: 0 0 var(--sp-2);
+  color: var(--muted);
+  font-weight: 800;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.letter-respond-line {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.letter-respond-body {
+  margin: var(--sp-2) 0;
+  padding: var(--sp-3);
+
+  background: white;
+  border-radius: var(--radius-sm);
+
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.letter-respond-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+/* The satisfying-but-fast send sequence (~0.8s): the draft folds down and
+   fades, standing in for "letter folds, envelope closes, sent" - the
+   actual Gmail send has already fully succeeded by the time this plays
+   (see mail.js), so this never delays the real request. Frozen instantly
+   under prefers-reduced-motion via the global override at the top of
+   this file. */
+.letter-respond-draft.letter-sending {
+  transform: scale(0.96) translateY(6px);
+  opacity: 0.4;
+}
+
+/* --- No auto-draftable reply available - point back to Gmail, same as
+   the existing dashboard current-state copy for these two statuses. --- */
+
+.letter-manual-note {
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--orange-tint);
+  border-radius: var(--radius-md);
+  color: var(--orange-deep);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+/* =========================
    MOBILE - card/action ownership must stay obvious on a narrow screen;
    the primary action stays full-width and easy to tap.
    ========================= */
@@ -1160,5 +1611,33 @@ button:disabled:hover,
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: var(--sp-4) var(--sp-3);
+  }
+
+  .mail-banner {
+    flex-wrap: wrap;
+  }
+
+  .mail-banner-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .mail-banner-actions .btn {
+    flex: 1 1 0;
+  }
+
+  .mail-envelope {
+    flex-wrap: wrap;
+  }
+
+  .mail-envelope-date {
+    order: 3;
+    width: 100%;
+    margin-top: 2px;
+  }
+
+  .account-warning .action-row .btn,
+  .letter-respond-actions .btn {
+    width: 100%;
   }
 }

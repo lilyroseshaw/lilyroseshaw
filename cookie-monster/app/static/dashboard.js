@@ -247,6 +247,18 @@
     });
   }
 
+  // ---- "You've got mail" banner dismiss ----
+  // Client-side only, for this page view - the persistent mailbox nav
+  // badge (base.html) stays visibly indicated regardless, so nothing is
+  // lost by not persisting the dismissal server-side.
+  const mailBannerDismiss = document.getElementById("mail-banner-dismiss");
+  if (mailBannerDismiss) {
+    mailBannerDismiss.addEventListener("click", () => {
+      const banner = document.getElementById("mail-banner");
+      if (banner) banner.hidden = true;
+    });
+  }
+
   // ---- Init ----
   document.querySelectorAll(".company-card").forEach(wireCard);
   refreshMergePicker();

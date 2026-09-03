@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Mailbox — Baker's Dozen{% endblock %}
+{% block content %}
+
+<section class="hero">
+  <h1>Your mailbox</h1>
+  <p class="lede">Replies from the companies you've asked Baker's Dozen to contact - not your inbox.</p>
+</section>
+
+<div class="card toolbar">
+  <a href="/dashboard" class="btn btn-ghost btn-small">← Back to dashboard</a>
+</div>
+
+{% if not entries %}
+<div class="card muted">
+  <p>No mail yet. Once a company replies to a request Baker's Dozen sent, it'll show up here.</p>
+</div>
+{% else %}
+<div class="mailbox-list">
+  {% for entry in entries %}
+  <a class="mail-envelope{% if entry.unread %} is-unread{% endif %}" href="/mail/{{ entry.company.id }}">
+    <span class="mail-envelope-icon" aria-hidden="true">{{ '✉️' if entry.unread else '📄' }}</span>
+    <div class="mail-envelope-body">
+      <p class="mail-envelope-name">{{ entry.company.name }}</p>
+      <span class="status-badge tone-{{ entry.tone }}">{{ entry.reason_label }}</span>
+    </div>
+    <span class="mail-envelope-date">{{ entry.latest.occurred_at.strftime('%b %d') }}</span>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}

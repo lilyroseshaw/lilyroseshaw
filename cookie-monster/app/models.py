@@ -183,6 +183,70 @@ class DeletionEvent(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
 
 
+class MailMessage(Base):
+    """One row per Gmail message that is part of a company's tracked
+    privacy-request correspondence - inbound (a company's reply) or
+    outbound (a request Baker's Dozen sent, including a follow-up reply
+    sent through the mailbox's Respond flow). This is the ONLY new table
+    the mailbox feature needs; a company's current mailbox
+    state (unread/action-needed/etc.) is deliberately NOT stored here -
+    see app/mail.py's MailState, computed fresh from these rows plus
+    Company.deletion_status every time, so there is never a second,
+    driftable copy of what deletion_status/response tracking already
+    know. Never holds attachments, full raw MIME, or the quoted history
+    of a reply - see app/mail.py for what's stripped before a row is ever
+    created, and deletion_response_tracker.py for the privacy boundary
+    (this table is only ever populated from a thread already fetched via
+    that module's single-thread-only Gmail read)."""
+
+    __tablename__ = "mail_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), index=True)
+
+    # "inbound" (a company's reply) | "outbound" (a request/reply Baker's
+    # Dozen sent, as the connected user, after explicit approval)
+    direction: Mapped[str] = mapped_column(String(16))
+
+    # Gmail's own message id - the dedup key. Always set: nothing is ever
+    # persisted here before a real send/receive actually happened (no
+    # drafts - see app/mail.py's preview/send split, same pattern as the
+    # existing deletion/preview + deletion/execute routes).
+    gmail_message_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    # Mirrors Company.deletion_thread_id at the time this row was created -
+    # denormalized for display/audit convenience only, never a second
+    # source of truth for which thread is tracked.
+    gmail_thread_id: Mapped[str] = mapped_column(String(100), index=True)
+    # The RFC822 Message-ID header (distinct from gmail_message_id, Gmail's
+    # own API id) - inbound only, needed so an outbound reply can set
+    # In-Reply-To/References and land in the same Gmail thread correctly.
+    rfc822_message_id: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+    occurred_at: Mapped[datetime.datetime] = mapped_column(DateTime)
+    # Inbound: the message's "From" header, shown as-is in the letter UI -
+    # the exact same transparency the existing attach-thread preview
+    # already shows the user. Outbound: "You".
+    from_display: Mapped[str] = mapped_column(String(300))
+    subject: Mapped[str] = mapped_column(String(300))
+    # The NEW content only - quoted history already stripped (see
+    # app/mail.py), capped well short of a full message. Never the raw
+    # MIME, never an attachment.
+    body_excerpt: Mapped[str] = mapped_column(String(4000))
+
+    # Inbound only - the same DeletionStatus.* classification
+    # response_classify.py already produces for this exact message.
+    # Never set for an outbound row.
+    classification_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    classification_confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    classification_quote: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+    # NULL = unread. Outbound rows are stamped read at creation (the user
+    # just sent it) so unread-counting logic only ever needs to look at
+    # this one column, never branch on direction.
+    read_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+
+
 class OAuthToken(Base):
     """Single-row table: this is a single-local-user prototype, not a multi-tenant app."""
 

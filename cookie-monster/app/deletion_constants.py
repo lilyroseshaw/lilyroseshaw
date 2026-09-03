@@ -241,13 +241,19 @@ class EventType:
     # email actually went out is genuinely unknown. Recorded by
     # recover_stuck_submitting(); never auto-resolved either way.
     EXECUTION_INTERRUPTED = "EXECUTION_INTERRUPTED"
+    # A follow-up reply was sent through the mailbox's explicit-approval
+    # Respond flow (see app/mail.py) - distinct from EMAIL_SENT, which is
+    # reserved for the ORIGINAL deletion request send in deletion_engine.py.
+    # Always source=USER: nothing here is ever sent without a per-message
+    # human approval click.
+    MAIL_REPLY_SENT = "MAIL_REPLY_SENT"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
         COMPANY_ACKNOWLEDGED, VERIFICATION_REQUESTED, ADDITIONAL_INFO_REQUESTED,
         COMPLETION_CONFIRMED, USER_MARKED_COMPLETE, REQUEST_REJECTED, FAILED, RETRY,
         RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED, RESEARCH_DEFERRED,
-        EXECUTION_STARTED, EXECUTION_INTERRUPTED,
+        EXECUTION_STARTED, EXECUTION_INTERRUPTED, MAIL_REPLY_SENT,
     }
 
 

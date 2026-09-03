@@ -9,6 +9,20 @@
   {% endif %}
 </section>
 
+{% if unread_mail_count and unread_mail_count > 0 %}
+<div class="mail-banner" id="mail-banner">
+  <span class="mail-banner-icon" aria-hidden="true">📬</span>
+  <div class="mail-banner-text">
+    <p class="mail-banner-title">You've got mail!</p>
+    <p class="mail-banner-sub">{{ unread_mail_count }} compan{{ 'y' if unread_mail_count == 1 else 'ies' }} wrote back.</p>
+  </div>
+  <div class="mail-banner-actions">
+    <a href="/mail" class="btn btn-primary btn-small">Open mailbox</a>
+    <button type="button" class="btn btn-ghost btn-small" id="mail-banner-dismiss">Later</button>
+  </div>
+</div>
+{% endif %}
+
 <div class="card progress-summary">
   <div class="progress-summary-stats">
     <div class="stat"><span class="stat-num">{{ counts.total }}</span><span class="stat-label">found</span></div>

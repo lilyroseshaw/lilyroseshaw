@@ -166,6 +166,37 @@ def send_email(creds: Credentials, to_email: str, subject: str, body_text: str) 
     return service.users().messages().send(userId="me", body={"raw": raw}).execute()
 
 
+def send_reply_email(
+    creds: Credentials, to_email: str, subject: str, body_text: str,
+    thread_id: str, in_reply_to: str | None = None,
+) -> dict:
+    """Sends exactly one email as the connected user, as a REPLY within an
+    existing Gmail thread - only ever called from app/mail.py's Respond
+    flow, only after a per-message explicit approval click. Distinct from
+    send_email() above (which starts a new thread for the original
+    deletion request): this sets Gmail's threadId so the reply lands in
+    the SAME conversation the company wrote to, plus the standard
+    In-Reply-To/References MIME headers (when the inbound message's own
+    Message-ID header is known) so mail clients thread it correctly too.
+    Returns Gmail's send response (contains the message id + threadId used
+    as MailMessage evidence)."""
+    import base64
+    from email.mime.text import MIMEText
+
+    message = MIMEText(body_text)
+    message["to"] = to_email
+    message["subject"] = subject
+    if in_reply_to:
+        message["In-Reply-To"] = in_reply_to
+        message["References"] = in_reply_to
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+
+    service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+    return service.users().messages().send(
+        userId="me", body={"raw": raw, "threadId": thread_id}
+    ).execute()
+
+
 def fetch_thread_messages(creds: Credentials, thread_id: str) -> list[dict]:
     """Fetches every message in ONE specific thread - never a search, never
     a list of the inbox. This is the only Gmail read call response tracking

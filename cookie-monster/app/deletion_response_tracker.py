@@ -6,16 +6,23 @@ Privacy/safety rules enforced here:
   (google_oauth.fetch_thread_messages does a direct thread get, never a
   search/list) - no other part of the inbox is ever touched.
 - Message bodies are decoded in-process for classification, then discarded.
-  Only a short (~200 char) quote is ever persisted, as event evidence.
+  Only a short (~200 char) quote is ever persisted as event evidence -
+  plus, since the mailbox feature, a longer (still capped, still
+  quote-stripped) excerpt on a MailMessage row (see app/mail.py) so the
+  user can read the letter itself, not just an audit-trail snippet.
 - A TRANSIENT check failure (Gmail API error, network error) never changes
   Company.deletion_status - the underlying request status is left exactly
   as it was, and a RESPONSE_CHECK_FAILED event records the failure for the
   backoff policy to retry later. DeletionStatus.FAILED is reserved for a
   genuinely permanent failure (the thread no longer exists at all) - never
   set merely because one poll attempt errored.
-- Cookie Monster never auto-replies to a company or sends anything in
-  response to VERIFICATION_NEEDED/MORE_INFO_REQUIRED - those just update
-  status and evidence for the user to act on themselves in their own Gmail.
+- This module itself never auto-replies to a company or sends anything in
+  response to VERIFICATION_NEEDED/MORE_INFO_REQUIRED - it only ever
+  updates status/evidence/mailbox state. Baker's Dozen's mailbox (see
+  app/mail.py's send_mailbox_reply) CAN draft and send a narrow, specific
+  reply for exactly these two statuses - but only after the user reads
+  the letter and explicitly approves the exact outgoing text, the same
+  "never sent without a human click" guarantee this rule always meant.
 - A reply almost always quotes some or all of Cookie Monster's own
   outgoing message back (Gmail/most clients do this automatically) - and
   that outgoing text itself contains phrases the classifier looks for
@@ -33,7 +40,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.errors import HttpError
 from sqlalchemy.orm import Session
 
-from app import config, google_oauth
+from app import config, google_oauth, mail
 from app.deletion_constants import DeletionStatus, EventType
 from app.deletion_events import record_event
 from app.models import Company
@@ -254,10 +261,12 @@ def check_company_response(
 
     last_classification = None
     for message in new_messages:
-        # Transient - discarded at end of this loop iteration. Quoted prior
-        # content (almost always including Cookie Monster's own outgoing
-        # message) is stripped BEFORE classification - see
-        # strip_quoted_reply()'s docstring for why this matters.
+        # Quoted prior content (almost always including Cookie Monster's own
+        # outgoing message) is stripped BEFORE classification AND before
+        # anything is persisted - see strip_quoted_reply()'s docstring for
+        # why this matters. The stripped text is used for classification and
+        # for the mailbox's MailMessage.body_excerpt below (capped, never
+        # the full raw message) - it is not otherwise kept around.
         body_text = strip_quoted_reply(extract_body_text(message))
         classification = classifier.classify(body_text)
         record_event(
@@ -269,6 +278,10 @@ def check_company_response(
                 "message_id": message.get("id"),
             },
         )
+        # Mailbox correspondence row for this same message - see app/mail.py
+        # for why this lives here rather than a second Gmail fetch: this is
+        # the ONE place a message from the tracked thread is ever seen.
+        mail.record_inbound_mail_message(db, company, message, body_text, classification)
         company.deletion_last_response_message_id = message.get("id")
         last_classification = classification
 

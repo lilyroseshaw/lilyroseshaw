@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}{{ company.name }} — Mailbox — Baker's Dozen{% endblock %}
+{% block content %}
+
+<div class="card toolbar">
+  <a href="/mail" class="btn btn-ghost btn-small">← Back to mailbox</a>
+</div>
+
+<section class="letter-head">
+  <h1>{{ company.name }}</h1>
+  <p class="letter-head-sub">Privacy correspondence</p>
+</section>
+
+{% if sent %}
+<div class="letter-sent-confirm" role="status">✅ Sent — {{ company.name }} is on it.</div>
+{% endif %}
+
+<div class="letter-stack">
+  {% for m in messages %}
+  <article class="letter {{ 'letter-inbound' if m.direction == 'inbound' else 'letter-outbound' }}">
+    <header class="letter-meta">
+      <span class="letter-from">{{ company.name if m.direction == 'inbound' else 'You' }}</span>
+      <span class="letter-date">{{ m.occurred_at.strftime('%b %d, %Y') }}</span>
+    </header>
+    <p class="letter-subject">{{ m.subject }}</p>
+    <p class="letter-body">{{ m.body_excerpt }}</p>
+
+    {% if m.direction == 'inbound' and understand.get(m.id) %}
+    <div class="letter-understand">
+      <p class="letter-understand-label">Baker's Dozen understands this as:</p>
+      <p class="letter-understand-text">{{ understand.get(m.id) }}</p>
+    </div>
+    {% endif %}
+  </article>
+  {% endfor %}
+</div>
+
+{% if choice_available %}
+<div class="account-warning">
+  <p class="account-warning-title">⚠️ This will delete your account</p>
+  <p class="account-warning-body">Continuing may permanently remove:</p>
+  <ul class="account-warning-list">
+    <li>account access</li>
+    <li>saved history</li>
+    <li>purchases/order history, where applicable</li>
+    <li>saved preferences</li>
+  </ul>
+  {% if consequences %}<p class="account-warning-detail">{{ consequences }}</p>{% endif %}
+
+  <p class="account-warning-ask">What do you want to do?</p>
+  <div class="action-row" id="account-warning-choices">
+    <button type="button" class="btn btn-primary btn-small" data-respond-kind="delete_account_and_data">Delete my account and eligible data</button>
+    <button type="button" class="btn btn-ghost btn-small" data-respond-kind="keep_account_request_data_only">Keep my account — request deletion of non-essential data</button>
+    <button type="button" class="btn btn-ghost btn-small" id="letter-decide-later">Decide later</button>
+  </div>
+
+  <div class="letter-respond-draft" id="letter-respond-draft" data-company-id="{{ company.id }}" hidden>
+    <p class="letter-respond-label">Outgoing letter</p>
+    <p class="letter-respond-line"><strong>To:</strong> <span id="respond-to"></span></p>
+    <p class="letter-respond-line"><strong>Subject:</strong> <span id="respond-subject"></span></p>
+    <pre class="letter-respond-body" id="respond-body"></pre>
+    <form method="post" action="/mail/{{ company.id }}/respond" id="respond-form">
+      <input type="hidden" name="kind" id="respond-kind-input">
+      <div class="letter-respond-actions">
+        <button type="button" class="btn btn-ghost btn-small" id="respond-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary btn-small" id="respond-send-btn" disabled>Send letter</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% elif company.deletion_status in ("VERIFICATION_NEEDED", "MORE_INFO_REQUIRED") %}
+<div class="letter-manual-note">
+  <p>Open Gmail and reply to {{ company.name }} yourself — Baker's Dozen never sends verification info for you{% if not deletes_account %}, and doesn't have enough evidence yet to draft this reply for you{% endif %}.</p>
+</div>
+{% endif %}
+
+<script src="/static/mail.js"></script>
+{% endblock %}

@@ -10,7 +10,7 @@ from fastapi.templating import Jinja2Templates
 from googleapiclient.errors import HttpError
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import config, deletion_engine, google_oauth
+from app import config, deletion_engine, google_oauth, mail
 from app.aggregator import aggregate, store
 from app.db import get_session, init_db
 from app.deletion_constants import (
@@ -28,7 +28,8 @@ from app.deletion_research import build_default_provider
 from app.deletion_resolver import backfill_all_companies, recover_stuck_method_lookup, resolve_deletion_method
 from app.deletion_response_tracker import check_company_response
 from app.gmail_scan import scan_inbox
-from app.models import Company, DeletionEvent, DeletionRecipe
+from app.mail import MailSendError, MailState, ReplyKind
+from app.models import Company, DeletionEvent, DeletionRecipe, MailMessage
 from app.response_classify import build_default_classifier
 
 app = FastAPI(title="Cookie Monster")
@@ -257,6 +258,7 @@ def index(request: Request):
         send_enabled = google_oauth.has_send_scope(db)
         response_tracking_enabled = google_oauth.has_readonly_scope(db)
         counts = _status_counts(db)
+        unread_mail_count = mail.unread_mail_count(db)
     finally:
         db.close()
     return templates.TemplateResponse(
@@ -269,6 +271,7 @@ def index(request: Request):
             "google_configured": bool(config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET),
             "send_enabled": send_enabled,
             "response_tracking_enabled": response_tracking_enabled,
+            "unread_mail_count": unread_mail_count,
         },
     )
 
@@ -599,6 +602,7 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         research_info = _research_info_for_companies(db, companies)
         execution_plans = _execution_plans_for_companies(db, companies)
         card_meta = _card_meta_for_companies(companies)
+        unread_mail_count = mail.unread_mail_count(db)
     finally:
         db.close()
 
@@ -606,7 +610,7 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
     check_status = request.query_params.get("check_status")
     check_message = None
     if check_result == "new_response":
-        check_message = "📬 Response found — " + _CHECK_RESULT_STATUS_LABELS.get(check_status, "updated") + "."
+        check_message = "📬 New mail — " + _CHECK_RESULT_STATUS_LABELS.get(check_status, "updated") + ". See your mailbox for the full letter."
     elif check_result == "no_new_response":
         check_message = "No new response yet."
     elif check_result == "check_failed":
@@ -633,6 +637,7 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         "threshold": config.DELETION_RECIPE_FAILURE_THRESHOLD,
         "attach_preview": None,
         "attach_preview_error": None,
+        "unread_mail_count": unread_mail_count,
     }
     context.update(extra)
     return context
@@ -986,8 +991,172 @@ def delete_all():
     use /auth/disconnect separately to revoke and delete the OAuth token too."""
     db = get_session()
     try:
+        # Mail rows hold more sensitive content (From headers, letter text)
+        # than a Company aggregate row - explicitly cleared first so "delete
+        # all imported data" is actually true of correspondence too.
+        db.query(MailMessage).delete()
         db.query(Company).delete()
         db.commit()
     finally:
         db.close()
     return RedirectResponse("/dashboard", status_code=303)
+
+
+# =========================
+# MAILBOX
+# =========================
+
+_MAIL_BADGE_TONE = {
+    MailState.UNREAD: "info",
+    MailState.ACTION_NEEDED: "warning",
+    MailState.REPLIED: "info",
+    MailState.READ: "neutral",
+}
+
+# "Baker's Dozen understands this as" - the letter view's plain-language
+# gloss for an inbound message's classification. Grounded ONLY in what
+# response_classify.py already concluded (never re-interpreted here) -
+# UNKNOWN_RESPONSE always renders as genuine uncertainty, never a guess.
+_MAIL_UNDERSTAND_TEMPLATES = {
+    DeletionStatus.COMPLETED: "{name} says your deletion is complete.",
+    DeletionStatus.REJECTED: "{name} declined this request.",
+    DeletionStatus.VERIFICATION_NEEDED: "{name} needs you to verify your identity.",
+    DeletionStatus.MORE_INFO_REQUIRED: "{name} needs more information from you.",
+    DeletionStatus.IN_PROGRESS: "{name} says they're working on it.",
+    DeletionStatus.SUBMITTED: "{name} acknowledged your request.",
+    DeletionStatus.UNKNOWN_RESPONSE: "We're not sure what they're asking.",
+}
+
+
+def _mail_understand_text(company_name: str, classification_status: str | None) -> str:
+    if classification_status is None:
+        return ""
+    return _MAIL_UNDERSTAND_TEMPLATES.get(classification_status, "We're not sure what they're asking.").format(
+        name=company_name
+    )
+
+
+def _mail_badge_tone(state: str | None, deletion_status: str) -> str:
+    if state == MailState.RESOLVED:
+        if deletion_status == DeletionStatus.COMPLETED:
+            return "success"
+        if deletion_status in (DeletionStatus.REJECTED, DeletionStatus.FAILED):
+            return "danger"
+        return "neutral"
+    return _MAIL_BADGE_TONE.get(state, "neutral")
+
+
+@app.get("/mail", response_class=HTMLResponse)
+def mailbox(request: Request):
+    """The mailbox list - one envelope per company with at least one
+    tracked message, newest activity first. Never a general inbox view -
+    every entry here traces back to a company's own deletion_thread_id."""
+    db = get_session()
+    try:
+        entries = mail.mailbox_entries(db)
+        for entry in entries:
+            entry["tone"] = _mail_badge_tone(entry["state"], entry["company"].deletion_status)
+    finally:
+        db.close()
+    return templates.TemplateResponse("mail.html", {"request": request, "entries": entries})
+
+
+@app.get("/mail/{company_id}", response_class=HTMLResponse)
+def mail_thread(request: Request, company_id: int):
+    """Opens one company's correspondence as a stack of letters. Marks any
+    currently-unread inbound message read - an explicit result of the user
+    opening it, never automatic."""
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        mail.mark_inbound_read(db, company_id)
+        messages = mail.get_company_mail(db, company_id)
+        if not messages:
+            raise HTTPException(status_code=404, detail="No mail for this company yet")
+        recipe = db.query(DeletionRecipe).filter(DeletionRecipe.domain == company.domain).one_or_none()
+        choice_available = mail.account_deletion_choice_available(company, recipe)
+        send_enabled = google_oauth.has_send_scope(db)
+        understand = {
+            m.id: _mail_understand_text(company.name, m.classification_status)
+            for m in messages if m.direction == "inbound"
+        }
+    finally:
+        db.close()
+    return templates.TemplateResponse(
+        "mail_thread.html",
+        {
+            "request": request,
+            "company": company,
+            "messages": messages,
+            "understand": understand,
+            "choice_available": choice_available,
+            "consequences": recipe.known_consequences if recipe else None,
+            "deletes_account": bool(recipe and recipe.deletes_account),
+            "send_enabled": send_enabled,
+            "sent": request.query_params.get("sent"),
+        },
+    )
+
+
+@app.get("/mail/{company_id}/respond/preview")
+def respond_preview(company_id: int, kind: str):
+    """Computes the EXACT outgoing reply, fresh, never persisted - same
+    preview-before-approval pattern as /deletion/preview. kind is one of
+    ReplyKind.ALL; anything else is refused rather than guessed at."""
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        if kind not in ReplyKind.ALL:
+            raise HTTPException(status_code=400, detail="Unknown response kind.")
+        recipe = db.query(DeletionRecipe).filter(DeletionRecipe.domain == company.domain).one_or_none()
+        if not mail.account_deletion_choice_available(company, recipe):
+            raise HTTPException(status_code=400, detail="No response choice is available for this company right now.")
+        messages = mail.get_company_mail(db, company_id)
+        inbound = [m for m in messages if m.direction == "inbound"]
+        latest_inbound = max(inbound, key=lambda m: m.occurred_at) if inbound else None
+        gmail_address = google_oauth.get_connected_address(db) or "your Gmail address"
+        draft = mail.build_choice_reply(company, recipe, latest_inbound, kind, gmail_address)
+        return {
+            "to": draft["to"],
+            "subject": draft["subject"],
+            "body": draft["body"],
+            "consequences": recipe.known_consequences if recipe else None,
+            "send_enabled": google_oauth.has_send_scope(db),
+        }
+    finally:
+        db.close()
+
+
+@app.post("/mail/{company_id}/respond")
+def respond_send(company_id: int, kind: str = Form(...)):
+    """The one place a mailbox reply is actually sent - only reachable after
+    the exact draft above was shown and this explicit approval POST
+    followed. Refuses (never silently drafts-only) if automatic sending
+    isn't enabled - same gate as the main deletion-execute flow."""
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        if not google_oauth.has_send_scope(db):
+            raise HTTPException(
+                status_code=400,
+                detail="Automatic sending isn't enabled - enable it first to reply through Baker's Dozen.",
+            )
+        creds = google_oauth.load_credentials(db)
+        gmail_address = google_oauth.get_connected_address(db)
+        if creds is None or gmail_address is None:
+            raise HTTPException(status_code=400, detail="Gmail is not connected")
+        try:
+            mail.send_mailbox_reply(db, company, kind, creds, gmail_address)
+        except MailSendError as exc:
+            raise HTTPException(status_code=502, detail=f"Couldn't send: {exc}") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        db.close()
+    return RedirectResponse(f"/mail/{company_id}?sent=1", status_code=303)
