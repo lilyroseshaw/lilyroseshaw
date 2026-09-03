@@ -1,18 +1,48 @@
+/* =========================
+   DESIGN TOKENS
+   =========================
+   A cozy, nostalgic-game palette (not pink-dominant) - warm parchment
+   surfaces, sky/sage/yellow/orange/lavender as purposeful accents, pink
+   kept as one accent among several rather than the whole identity. Status
+   tones (info/success/warning/danger) are used consistently everywhere a
+   state is shown, always paired with an icon/word - never color alone. */
 :root {
-  --pink: #ff72b6;
-  --hot-pink: #ff3f9f;
-  --baby-pink: #ffd6eb;
-  --light-pink: #fff0f8;
-  --purple: #a78bfa;
-  --lavender: #eee5ff;
-  --blue: #9ee7ff;
-  --yellow: #fff19a;
-  --cream: #fffafc;
-  --white: #ffffff;
-  --ink: #45243a;
-  --muted: #8d7182;
-  --border: #f2c5df;
-  --shadow: 5px 5px 0 rgba(255, 114, 182, 0.20);
+  /* Surfaces */
+  --bg-base: #f6efe0;
+  --bg-base-2: #eef2e3;
+  --surface: #fffcf5;
+  --surface-alt: #f4ecda;
+  --border: #ddc99b;
+  --border-soft: #ead9ac;
+
+  /* Ink */
+  --ink: #3c2f22;
+  --muted: #8a7960;
+
+  /* Accents - each with a "deep" variant for text-on-light-fill use */
+  --sky: #9adcef;
+  --sky-deep: #2e7ea6;
+  --sage: #a7cf9e;
+  --sage-deep: #3f7a45;
+  --yellow: #f4d35e;
+  --yellow-deep: #8a6a12;
+  --orange: #f0a35f;
+  --orange-deep: #b8631f;
+  --red: #e08267;
+  --red-deep: #a8432a;
+  --lavender: #c9b8e8;
+  --lavender-deep: #6a4fa0;
+  --brown: #8c5a3c;
+  --pink: #ef9dc2;
+  --pink-deep: #c15a8c;
+
+  --shadow-sm: 3px 3px 0 rgba(60, 47, 34, 0.12);
+  --shadow-md: 5px 5px 0 rgba(60, 47, 34, 0.14);
+  --shadow-lg: 7px 7px 0 rgba(60, 47, 34, 0.16);
+
+  --radius-lg: 22px;
+  --radius-md: 15px;
+  --radius-sm: 10px;
 }
 
 /* =========================
@@ -22,7 +52,6 @@
 * {
   box-sizing: border-box;
 }
-
 
 body {
   margin: 0;
@@ -34,29 +63,72 @@ body {
     -apple-system,
     BlinkMacSystemFont,
     sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
 
   background:
     linear-gradient(
-      135deg,
-      #fff8fc 0%,
-      #ffeef7 50%,
-      #f7f0ff 100%
+      160deg,
+      var(--bg-base) 0%,
+      var(--bg-base-2) 100%
     );
-
   background-attachment: fixed;
 }
 
-
 body::after {
-  content: "✧";
+  content: "✦";
   position: fixed;
   right: 30px;
   bottom: 20px;
-  color: var(--hot-pink);
-  font-size: 70px;
-  opacity: 0.25;
+  color: var(--lavender-deep);
+  font-size: 60px;
+  opacity: 0.12;
   transform: rotate(15deg);
   pointer-events: none;
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+  color: var(--ink);
+}
+
+h2 {
+  font-size: 22px;
+  font-weight: 900;
+}
+
+a {
+  color: var(--sky-deep);
+  font-weight: 800;
+}
+
+a:hover {
+  color: var(--lavender-deep);
+}
+
+.muted {
+  color: var(--muted);
+  text-align: center;
+}
+
+/* Accessible focus ring for every interactive element - never relies on
+   the browser default, which some of the custom controls below (buttons
+   with appearance:none, etc.) would otherwise lose. */
+:focus-visible {
+  outline: 3px solid var(--sky-deep);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Respect the user's OS-level reduced-motion preference - every
+   transition/animation in this file collapses to near-instant. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* =========================
@@ -64,165 +136,147 @@ body::after {
    ========================= */
 
 .container {
-  width: min(1050px, calc(100% - 32px));
+  width: min(900px, calc(100% - 32px));
   margin: 0 auto;
   position: relative;
   z-index: 1;
+  padding-bottom: 60px;
 }
 
 /* =========================
-   HEADER / LOGO
+   TOP BAR / WORDMARK
    ========================= */
 
-header {
+.topbar {
   text-align: center;
-  padding: 55px 0 30px;
+  padding: 44px 20px 30px;
 }
 
-header h1 {
-  margin: 0;
-
-  display: inline-flex;
+.wordmark {
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: 18px;
+  gap: 16px;
 
-  color: #ff4eaa;
+  width: fit-content;
+  margin: 0 auto;
+
+  text-decoration: none;
+}
+
+.wordmark span {
+  color: var(--ink);
 
   font-family:
     "Courier New",
     "Arial Black",
-    "Trebuchet MS",
     monospace;
 
-  font-size: clamp(38px, 7vw, 68px);
+  font-size: clamp(32px, 6vw, 54px);
   font-weight: 1000;
+  line-height: 1;
 
-  letter-spacing: 3px;
-  line-height: 0.95;
-
+  letter-spacing: 2px;
   text-transform: uppercase;
 
-  /* cute Y2K game-style dimensional lettering */
   text-shadow:
-    3px 0 #ffffff,
-    -3px 0 #ffffff,
-    0 3px #ffffff,
-    0 -3px #ffffff,
-    5px 5px 0 #b98cff,
-    8px 8px 0 #f5b4d7;
+    2px 0 var(--surface),
+    -2px 0 var(--surface),
+    0 2px var(--surface),
+    0 -2px var(--surface),
+    4px 4px 0 var(--lavender),
+    7px 7px 0 var(--yellow);
 
   transform: skew(-2deg);
 }
-header h1::before,
-header h1::after {
-  content: "🍪";
 
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.wordmark-cookie {
+  width: 60px;
+  height: 60px;
+  flex: 0 0 60px;
 
-  width: 58px;
-  height: 58px;
+  image-rendering: pixelated;
 
-  font-family: sans-serif;
-  font-size: 38px;
+  filter:
+    drop-shadow(3px 3px 0 var(--orange))
+    drop-shadow(1px 1px 0 var(--surface));
 
-  background: linear-gradient(
-    145deg,
-    #e5a15f,
-    #a95e30
-  );
-
-  border: 4px solid white;
-  border-radius: 16px;
-
-  box-shadow:
-    4px 4px 0 #ffafd5,
-    0 0 0 2px #e8c1d9;
-
-  transform: rotate(-8deg);
+  transform: rotate(-10deg);
+  transition: transform 0.15s ease;
 }
 
-header h1::after {
-  transform: rotate(8deg) scaleX(-1);
+.wordmark-cookie-right {
+  transform: rotate(10deg) scaleX(-1);
 }
 
-header p {
-  margin: 12px 0 0;
+.wordmark:hover .wordmark-cookie {
+  transform: rotate(-16deg) scale(1.06);
+}
 
-  color: var(--pink);
-  font-size: 19px;
-  font-weight: 900;
+.wordmark:hover .wordmark-cookie-right {
+  transform: rotate(16deg) scaleX(-1) scale(1.06);
+}
+
+.tagline {
+  display: block;
+  margin-top: 14px;
+
+  color: var(--sage-deep);
+  font-size: 16px;
+  font-weight: 800;
   letter-spacing: 1px;
   text-transform: lowercase;
 }
-header p {
-  margin: 18px 0 0;
 
-  color: #a66be8;
-
-  font-size: 21px;
-  font-weight: 900;
-
-  letter-spacing: 2px;
-  text-transform: lowercase;
-
-  text-shadow: 1px 1px 0 white;
-}
-
-header p::before {
+.tagline::before {
   content: "✦ ";
-  color: #ff72b6;
+  color: var(--pink-deep);
 }
 
-header p::after {
+.tagline::after {
   content: " ✦";
-  color: #ff72b6;
+  color: var(--sky-deep);
 }
 
-/* =========================
-   CARDS
-   ========================= */
-
-.card {
-  position: relative;
-
-  background: rgba(255, 255, 255, 0.92);
-  border: 3px solid white;
-  border-radius: 22px;
-
-  box-shadow:
-    0 0 0 2px var(--border),
-    var(--shadow);
-
-  padding: 22px;
-  margin-bottom: 20px;
+.footer {
+  text-align: center;
+  margin-top: 40px;
+  padding: 0 20px;
 }
 
-.card::before {
-  content: "✦";
-  position: absolute;
-  top: -12px;
-  right: 18px;
-
-  width: 24px;
-  height: 24px;
-
-  display: grid;
-  place-items: center;
-
-  color: white;
-  background: var(--pink);
-  border-radius: 50%;
-
+.footer p {
+  color: var(--muted);
   font-size: 12px;
-  box-shadow: 2px 2px 0 #d9a5c0;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+@media (max-width: 650px) {
+  .wordmark { gap: 9px; }
+  .wordmark-cookie { width: 42px; height: 42px; flex-basis: 42px; }
+  .tagline { font-size: 13px; }
 }
 
 /* =========================
-   COUNTERS
+   HERO / PAGE INTRO
    ========================= */
+
+.hero {
+  text-align: center;
+  margin-bottom: 22px;
+}
+
+.hero h1 {
+  font-size: clamp(22px, 4vw, 30px);
+  font-weight: 900;
+  color: var(--ink);
+}
+
+.hero .lede {
+  margin: 10px auto 0;
+  max-width: 520px;
+  color: var(--muted);
+}
 
 .counts {
   display: flex;
@@ -232,6 +286,70 @@ header p::after {
   margin: 16px 0 0;
 }
 
+.scan-summary {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.scan-summary::before { content: "✦ "; color: var(--pink-deep); }
+.scan-summary::after { content: " ✦"; color: var(--sky-deep); }
+
+/* =========================
+   GENERIC PANEL CARD (index page sections, toolbar, merge bar) -
+   distinct from .company-card below, which is a different, more
+   structured component.
+   ========================= */
+
+.card {
+  position: relative;
+
+  background: var(--surface);
+  border: 3px solid white;
+  border-radius: var(--radius-lg);
+
+  box-shadow:
+    0 0 0 2px var(--border-soft),
+    var(--shadow-md);
+
+  padding: 22px;
+  margin-bottom: 20px;
+}
+
+.card.warning {
+  box-shadow:
+    0 0 0 2px var(--orange),
+    var(--shadow-md);
+}
+
+.lede {
+  color: var(--muted);
+}
+
+.connected {
+  color: var(--sage-deep);
+  font-weight: 800;
+}
+
+.permission-list {
+  color: var(--muted);
+  padding-left: 20px;
+}
+
+.permission-list li {
+  margin-bottom: 4px;
+}
+
+.fine-print {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 10px;
+}
+
+/* =========================
+   PILLS / STATUS BADGES
+   ========================= */
+
 .pill {
   display: inline-flex;
   align-items: center;
@@ -239,29 +357,51 @@ header p::after {
   border: 2px solid white;
   border-radius: 999px;
 
-  padding: 8px 14px;
+  padding: 6px 13px;
 
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 800;
+
+  box-shadow: 2px 2px 0 var(--border-soft);
+}
+
+.pill.pending { background: var(--yellow); color: var(--yellow-deep); }
+.pill.confirmed { background: var(--sage); color: var(--sage-deep); }
+.pill.rejected { background: var(--lavender); color: var(--lavender-deep); }
+
+.pill.confidence-high { background: var(--sage); color: var(--sage-deep); }
+.pill.confidence-medium { background: var(--yellow); color: var(--yellow-deep); }
+.pill.confidence-low { background: var(--border-soft); color: var(--muted); }
+.pill[class*="rel-"] { background: var(--surface-alt); color: var(--muted); }
+
+/* Status badge in each company card's header - tone drives color, but
+   text always differs too (see main.py's _STATUS_BADGES), so status is
+   never communicated by color alone. */
+.status-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 2px solid white;
+
+  font-size: 12px;
   font-weight: 900;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
 
-  box-shadow: 2px 2px 0 var(--border);
+  box-shadow: 2px 2px 0 rgba(60, 47, 34, 0.1);
 }
 
-.pill.pending {
-  background: var(--yellow);
-}
-
-.pill.confirmed {
-  background: var(--baby-pink);
-  color: var(--hot-pink);
-}
-
-.pill.rejected {
-  background: var(--lavender);
-}
+.status-badge.tone-neutral { background: var(--border-soft); color: var(--muted); }
+.status-badge.tone-info { background: var(--sky); color: var(--sky-deep); }
+.status-badge.tone-warning { background: var(--orange); color: #4a2a0d; }
+.status-badge.tone-success { background: var(--sage); color: var(--sage-deep); }
+.status-badge.tone-danger { background: var(--red); color: white; }
 
 /* =========================
-   TOOLBAR
+   TOOLBAR / FORM CONTROLS
    ========================= */
 
 .toolbar {
@@ -269,609 +409,278 @@ header p::after {
   flex-wrap: wrap;
   gap: 12px;
   align-items: center;
+  justify-content: space-between;
 }
 
 .toolbar form {
   margin: 0;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 select,
 input,
 textarea {
-  border: 3px solid var(--border);
-  border-radius: 13px;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
 
   background: white;
   color: var(--ink);
 
-  padding: 10px 13px;
+  padding: 9px 12px;
 
   font: inherit;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 select:focus,
 input:focus,
 textarea:focus {
   outline: none;
-  border-color: var(--pink);
-
-  box-shadow:
-    0 0 0 4px rgba(255,114,182,0.15);
+  border-color: var(--sky-deep);
+  box-shadow: 0 0 0 4px rgba(46, 126, 166, 0.15);
 }
 
 /* =========================
-   COMPANY CARDS
+   DASHBOARD PROGRESS SUMMARY
    ========================= */
 
-.company {
-  position: relative;
-
-  background: linear-gradient(
-    135deg,
-    #ffffff 0%,
-    #fff8fc 100%
-  );
-
-  border: 3px solid white;
-  border-radius: 20px;
-
-  padding: 20px;
-  margin-bottom: 16px;
-
-  box-shadow:
-    0 0 0 2px #f3c6df,
-    4px 5px 0 #f5d4e6;
-
-  transition:
-    transform 0.15s ease,
-    box-shadow 0.15s ease;
-}
-
-.company:hover {
-  transform: translateY(-3px) rotate(-0.3deg);
-
-  box-shadow:
-    0 0 0 2px var(--pink),
-    6px 7px 0 #efb6d4;
-}
-
-.company::after {
-  content: "✦";
-  position: absolute;
-  top: 12px;
-  right: 15px;
-
-  color: var(--purple);
-  font-size: 18px;
-
-  text-shadow:
-    8px 5px 0 var(--pink),
-    -7px 9px 0 var(--blue);
-}
-
-.company h3 {
-  display: inline-block;
-
-  margin: 0 0 10px;
-  padding: 7px 13px;
-
-  background: var(--light-pink);
-
-  border: 2px solid var(--baby-pink);
-  border-radius: 11px;
-
-  color: var(--hot-pink);
-
-  font-size: 20px;
-  font-weight: 1000;
-
-  box-shadow: 3px 3px 0 #f4c8df;
-}
-
-.company p {
-  color: var(--muted);
-  line-height: 1.5;
-}
-
-/* =========================
-   COMPANY DETAILS
-   ========================= */
-
-details {
-  margin-top: 12px;
-
-  background: #fff7fc;
-
-  border: 2px dashed var(--border);
-  border-radius: 13px;
-
-  padding: 11px;
-}
-
-summary {
-  cursor: pointer;
-
-  color: var(--pink);
-  font-weight: 900;
-}
-
-/* =========================
-   BUTTONS
-   ========================= */
-
-button,
-.btn {
-  position: relative;
-
-  appearance: none;
-
-  display: inline-flex;
-  align-items: center;
+.progress-summary-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
   justify-content: center;
-
-  border: 3px solid white;
-  border-radius: 13px;
-
-  padding: 10px 17px;
-
-  font: inherit;
-  font-weight: 1000;
-
-  cursor: pointer;
-  text-decoration: none;
-
-  box-shadow:
-    3px 3px 0 rgba(93, 45, 75, 0.18);
-
-  transition:
-    transform 0.12s ease,
-    box-shadow 0.12s ease;
 }
 
-button::after,
-.btn::after {
-  content: "✦";
-  margin-left: 7px;
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 70px;
+}
+
+.stat-num {
+  font-size: 26px;
+  font-weight: 1000;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.stat-done .stat-num { color: var(--sage-deep); }
+
+.progress-summary-bar {
+  height: 10px;
+  margin-top: 16px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border-soft);
+  overflow: hidden;
+}
+
+.progress-summary-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--sage), var(--sage-deep));
+  border-radius: 999px;
+  transition: width 0.5s ease;
+}
+
+.progress-summary-caption {
+  margin: 8px 0 0;
+  text-align: center;
+  color: var(--muted);
   font-size: 12px;
 }
 
-button:hover,
-.btn:hover {
-  transform: translate(-1px, -2px);
-
-  box-shadow:
-    5px 6px 0 rgba(93, 45, 75, 0.18);
-}
-
-button:active,
-.btn:active {
-  transform: translate(2px, 2px);
-
-  box-shadow:
-    1px 1px 0 rgba(93, 45, 75, 0.18);
-}
-
-/* appearance:none above strips the browser's own dimmed look for a
-   disabled button, so without this a disabled .btn (e.g. the "Researching…"
-   placeholder) would be indistinguishable from a live one - clickable-
-   looking but silently doing nothing on click. */
-button:disabled,
-.btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-button:disabled:hover,
-.btn:disabled:hover {
-  transform: none;
-  box-shadow: 3px 3px 0 rgba(93, 45, 75, 0.18);
-}
-
-/* CONFIRM */
-
-.btn-confirm {
-  color: white;
-
-  background:
-    linear-gradient(
-      135deg,
-      #ff8cc6,
-      #ff4da6
-    );
-
-  box-shadow:
-    3px 3px 0 #d63d86,
-    0 0 10px rgba(255,114,182,0.25);
-}
-
-.btn-confirm::before {
-  content: "✧";
-  margin-right: 5px;
-}
-
-/* REJECT */
-
-.btn-reject {
-  color: var(--ink);
-
-  background:
-    linear-gradient(
-      135deg,
-      #d9c7ff,
-      #b99cff
-    );
-
-  box-shadow:
-    3px 3px 0 #9271d6;
-}
-
-.btn-reject::before {
-  content: "✦";
-  margin-right: 5px;
-}
-
-/* SECONDARY */
-
-.btn-secondary {
-  color: var(--ink);
-  background: white;
-}
-
-.btn-primary {
-  color: white;
-  background:
-    linear-gradient(
-      135deg,
-      #ff8cc6,
-      #b78cff
-    );
-}
-
-.btn-danger {
-  color: white;
-  background:
-    linear-gradient(
-      135deg,
-      #ff729f,
-      #ef4779
-    );
-}
-
 /* =========================
-   ACTION AREA
+   COMPANY CARD - one self-contained object per company. Strong outer
+   boundary + generous inter-card spacing so ownership is never ambiguous;
+   internal sections (current-state, details) get their own subtle panel
+   treatment instead of a mere divider line, so nothing inside ever reads
+   as if it could belong to a neighboring card.
    ========================= */
 
-.actions {
+.company-list {
   display: flex;
-  flex-wrap: wrap;
-  gap: 9px;
-
-  margin-top: 17px;
-  padding-top: 15px;
-
-  border-top: 2px dashed #f0cce0;
+  flex-direction: column;
+  gap: 26px;
 }
 
-/* =========================
-   TEXT
-   ========================= */
-
-h2,
-h3 {
-  color: var(--hot-pink);
-}
-
-h2 {
-  font-size: 24px;
-  font-weight: 1000;
-}
-
-a {
-  color: var(--hot-pink);
-  font-weight: 900;
-}
-
-a:hover {
-  color: var(--purple);
-}
-
-.muted {
-  color: var(--muted);
-  text-align: center;
-}
-
-/* =========================
-   LITTLE Y2K SPARKLE
-   ========================= */
-
-.scan-summary::before {
-  content: "✧ ";
-  color: var(--pink);
-}
-
-.scan-summary::after {
-  content: " ✧";
-  color: var(--purple);
-}
-
-/* =========================
-   MOBILE
-   ========================= */
-
-@media (max-width: 650px) {
-  .container {
-    width: calc(100% - 20px);
-  }
-
-  header {
-    padding-top: 42px;
-  }
-
-  header h1 {
-    gap: 8px;
-    font-size: 30px;
-  }
-header h1::before,
-header h1::after {
-  content: "";
-  display: block;
+.company-card {
   position: relative;
 
-  width: 58px;
-  height: 58px;
-
-  flex: 0 0 58px;
-
-  background:
-    radial-gradient(circle at 25% 25%, #fff0c9 0 4px, transparent 5px),
-    radial-gradient(circle at 70% 22%, #fff0c9 0 4px, transparent 5px),
-    radial-gradient(circle at 30% 70%, #fff0c9 0 4px, transparent 5px),
-    radial-gradient(circle at 75% 68%, #fff0c9 0 4px, transparent 5px),
-    #c8793e;
-
-  border: 4px solid #fff;
-  border-radius: 50%;
+  background: var(--surface);
+  border: 3px solid white;
+  border-radius: var(--radius-lg);
 
   box-shadow:
-    4px 4px 0 #ff9dcc,
-    0 0 0 2px #e9b6d2;
+    0 0 0 2px var(--border),
+    var(--shadow-lg);
 
-  image-rendering: pixelated;
+  padding: 22px;
 
-  /* chunky pixel-ish cookie silhouette */
-  clip-path: polygon(
-    15% 0%,
-    85% 0%,
-    100% 15%,
-    100% 85%,
-    85% 100%,
-    15% 100%,
-    0% 85%,
-    0% 15%
-  );
-
-  transform: rotate(-8deg);
+  transition: box-shadow 0.15s ease;
 }
 
-header h1::after {
-  transform: rotate(8deg) scaleX(-1);
-}header h1::before,
-header h1::after {
-  content: "🍪";
-  display: block;
-  flex: 0 0 58px;
-
-  width: 58px;
-  height: 58px;
-
-  font-size: 46px;
-  line-height: 58px;
-  text-align: center;
-
-  filter:
-    drop-shadow(3px 3px 0 #ff9dcc)
-    drop-shadow(0 0 0 white);
-
-  transform: rotate(-10deg);
+.company-card.just-updated {
+  box-shadow:
+    0 0 0 3px var(--sky-deep),
+    var(--shadow-lg);
 }
 
-header h1::after {
-  transform: rotate(10deg) scaleX(-1);
-}
-    width: 42px;
-    height: 42px;
-    font-size: 28px;
-  }
-
-  header p {
-    font-size: 16px;
-  }
-
-  .actions {
-    flex-direction: column;
-  }
-
-  .actions .btn,
-  .actions button {
-    width: 100%;
-  }
-}/* ========================================
-   COOKIE MONSTER Y2K GAME HEADER
-   ======================================== */
-
-header {
-  text-align: center;
-  padding: 48px 20px 34px;
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.wordmark {
+.card-identity h3 {
+  font-size: 19px;
+  font-weight: 900;
+  color: var(--ink);
+}
+
+.card-identity .domain {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* Lightweight progress stepper - a plain-language "you are here" strip,
+   not a new source of truth: purely a grouping of the same DeletionStatus
+   values already shown elsewhere (see main.py's _stage_index_for_company).
+   */
+.progress-stepper {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.progress-stepper li {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 18px;
+  gap: 6px;
 
-  width: fit-content;
-  margin: 0 auto;
-
-  text-decoration: none;
-}
-
-.wordmark span {
-  color: #ff4fa7;
-
-  font-family:
-    "Courier New",
-    "Arial Black",
-    monospace;
-
-  font-size: clamp(38px, 7vw, 68px);
-  font-weight: 1000;
-  line-height: 1;
-
-  letter-spacing: 3px;
-  text-transform: uppercase;
-
-  text-shadow:
-    3px 0 #ffffff,
-    -3px 0 #ffffff,
-    0 3px #ffffff,
-    0 -3px #ffffff,
-    5px 5px 0 #a987f5,
-    8px 8px 0 #ffc0df;
-
-  transform: skew(-2deg);
-}
-
-.wordmark-cookie {
-  width: 70px;
-  height: 70px;
-  flex: 0 0 70px;
-
-  image-rendering: pixelated;
-
-  filter:
-    drop-shadow(4px 4px 0 #ff9dcc)
-    drop-shadow(2px 2px 0 #ffffff);
-
-  transform: rotate(-10deg);
-
-  transition: transform 0.15s ease;
-}
-
-.wordmark-cookie-right {
-  transform: rotate(10deg) scaleX(-1);
-}
-
-/* little game-like movement when hovering */
-
-.wordmark:hover .wordmark-cookie {
-  transform: rotate(-16deg) scale(1.08);
-}
-
-.wordmark:hover .wordmark-cookie-right {
-  transform: rotate(16deg) scaleX(-1) scale(1.08);
-}
-
-.wordmark:hover span {
-  color: #ff3299;
-}
-
-/* subtitle */
-
-header::after {
-  content: "✦  reclaim your data  ✦";
-  display: block;
-
-  margin-top: 18px;
-
-  color: #a66be8;
-
-  font-size: 18px;
-  font-weight: 900;
-
-  letter-spacing: 2px;
-  text-transform: lowercase;
-
-  text-shadow: 1px 1px 0 #ffffff;
-}
-
-/* mobile */
-
-@media (max-width: 650px) {
-  .wordmark {
-    gap: 9px;
-  }
-
-  .wordmark span {
-    font-size: clamp(25px, 8vw, 38px);
-    letter-spacing: 1px;
-  }
-
-  .wordmark-cookie {
-    width: 46px;
-    height: 46px;
-    flex-basis: 46px;
-  }
-
-  header::after {
-    font-size: 14px;
-  }
-}
-
-/* =========================
-   DELETE MY DATA
-   ========================= */
-
-.btn-delete {
-  color: white;
-
-  background:
-    linear-gradient(
-      135deg,
-      #ff6a6a,
-      #ff3f6b
-    );
-
-  box-shadow:
-    3px 3px 0 #c22a4d,
-    0 0 10px rgba(255, 63, 107, 0.3);
-}
-
-.btn-delete::before {
-  content: "🗑";
-  margin-right: 5px;
-}
-
-.deletion-block {
-  margin-top: 14px;
-  padding-top: 14px;
-
-  border-top: 2px dashed #f0cce0;
-}
-
-.deletion-line {
-  margin: 0 0 10px;
+  font-size: 11px;
   font-weight: 800;
+  color: var(--border);
 }
 
-.deletion-ready {
-  color: #1f8a5a;
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
 }
 
-.deletion-done {
-  color: #1f8a5a;
+.progress-stepper .step-done { color: var(--sage-deep); }
+.progress-stepper .step-current {
+  color: var(--orange-deep);
+}
+.progress-stepper .step-current .step-dot {
+  box-shadow: 0 0 0 4px rgba(240, 163, 95, 0.25);
+}
+.progress-stepper .step-pending { color: var(--border); }
+
+/* Arriving at the FINAL stage ("Deleted") is a completion, not an
+   in-progress state - the generic orange "current" treatment above would
+   read as "needs attention" right when a company is actually done, which
+   contradicts its own success-toned status badge. */
+.progress-stepper li:last-child.step-current {
+  color: var(--sage-deep);
+}
+.progress-stepper li:last-child.step-current .step-dot {
+  box-shadow: 0 0 0 4px rgba(63, 122, 69, 0.25);
 }
 
-.deletion-failed {
-  color: var(--hot-pink);
+.card-body {
+  margin-top: 16px;
 }
 
-.deletion-detail {
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.review-actions form { margin: 0; }
+
+.review-actions-secondary .btn {
+  padding: 7px 13px;
+  font-size: 13px;
+}
+
+/* The "current state" panel - a distinct surface WITHIN the card, never a
+   bare horizontal rule, so its contents (including Check for response /
+   Delete my data) can never read as floating between two cards. */
+.current-state {
+  margin-top: 14px;
+  padding: 16px;
+
+  background: var(--surface-alt);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+}
+
+.state-line {
+  margin: 0 0 8px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.state-line:last-child { margin-bottom: 0; }
+
+.state-success { color: var(--sage-deep); }
+.state-warning { color: var(--orange-deep); }
+.state-danger { color: var(--red-deep); }
+
+.state-celebrate {
+  animation: pop-in 0.35s ease;
+}
+
+@keyframes pop-in {
+  0% { transform: scale(0.92); opacity: 0.4; }
+  60% { transform: scale(1.03); opacity: 1; }
+  100% { transform: scale(1); }
+}
+
+.state-detail {
   margin: 0 0 10px;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
+}
+
+.state-detail:last-child { margin-bottom: 0; }
+
+.state-quote {
+  padding: 8px 10px;
+  background: white;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border);
+  font-style: italic;
 }
 
 .mark-completed-form {
@@ -890,9 +699,9 @@ header::after {
   margin-top: 12px;
   padding: 12px;
 
-  background: var(--light-pink);
-  border: 2px dashed var(--hot-pink);
-  border-radius: 13px;
+  background: white;
+  border: 2px dashed var(--red);
+  border-radius: var(--radius-sm);
 }
 
 .duplicate-warning p {
@@ -901,7 +710,224 @@ header::after {
   font-weight: 800;
 }
 
-/* Confirmation modal */
+.check-response-result {
+  margin: 10px 0 0;
+  padding: 8px 12px;
+
+  background: white;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.attach-thread-block {
+  margin-top: 12px;
+}
+
+.attach-preview-line {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.attach-error { color: var(--red-deep); }
+
+/* Secondary, lower-frequency actions (mark completed, attach thread) live
+   behind a small expandable disclosure so the current-state panel stays
+   scannable - the primary action is never competing with them visually. */
+.secondary-action {
+  margin-top: 10px;
+  padding: 10px 12px;
+
+  background: white;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+}
+
+.secondary-action summary {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.secondary-action[open] summary {
+  margin-bottom: 8px;
+}
+
+/* Collapsed-by-default technical details (evidence, correction form,
+   merge) - kept OUT of the scannable default view of the card. */
+.card-details {
+  margin-top: 14px;
+  padding: 12px 14px;
+
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+}
+
+.card-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 800;
+  font-size: 13px;
+}
+
+.card-details[open] summary {
+  margin-bottom: 10px;
+}
+
+.card-details p, .card-details ul {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.evidence-line, .dates {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.correct-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+  margin: 10px 0;
+}
+
+.correct-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.merge-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+/* =========================
+   BUTTONS
+   ========================= */
+
+button,
+.btn {
+  position: relative;
+
+  appearance: none;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  border: 3px solid white;
+  border-radius: var(--radius-sm);
+
+  padding: 10px 16px;
+
+  font: inherit;
+  font-weight: 900;
+
+  cursor: pointer;
+  text-decoration: none;
+
+  box-shadow: var(--shadow-sm);
+
+  transition:
+    transform 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+button:hover,
+.btn:hover {
+  transform: translate(-1px, -2px);
+  box-shadow: var(--shadow-md);
+}
+
+button:active,
+.btn:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 rgba(60, 47, 34, 0.14);
+}
+
+/* appearance:none above strips the browser's own dimmed look for a
+   disabled button, so without this a disabled .btn (e.g. an in-flight
+   AJAX action, or the "Researching…" placeholder) would be
+   indistinguishable from a live one - clickable-looking but silently
+   doing nothing on click. */
+button:disabled,
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+button:disabled:hover,
+.btn:disabled:hover {
+  transform: none;
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-small {
+  padding: 7px 13px;
+  font-size: 13px;
+}
+
+/* PRIMARY - the one hero action per card state */
+.btn-primary {
+  color: white;
+  background: linear-gradient(135deg, var(--sage), var(--sage-deep));
+  box-shadow: 3px 3px 0 #2c5a30, var(--shadow-sm);
+}
+
+/* GHOST / SECONDARY - everything else recedes visually. .btn-secondary is
+   kept as an alias so index.html (unchanged this pass) still matches. */
+.btn-ghost,
+.btn-secondary {
+  color: var(--ink);
+  background: var(--surface);
+  border-color: var(--border-soft);
+  box-shadow: 2px 2px 0 rgba(60, 47, 34, 0.08);
+}
+
+.btn-confirm {
+  color: white;
+  background: linear-gradient(135deg, var(--sky), var(--sky-deep));
+  box-shadow: 3px 3px 0 #235f7c, var(--shadow-sm);
+}
+
+.btn-confirm::before { content: "✦ "; }
+
+.btn-reject {
+  color: var(--lavender-deep);
+  background: var(--surface);
+  border-color: var(--lavender);
+}
+
+.btn-danger {
+  color: white;
+  background: linear-gradient(135deg, var(--red), var(--red-deep));
+  box-shadow: 3px 3px 0 #7c2e1a, var(--shadow-sm);
+}
+
+.btn-delete {
+  color: white;
+  background: linear-gradient(135deg, var(--red), #c9502f);
+  box-shadow: 3px 3px 0 #7c2e1a, var(--shadow-sm);
+}
+
+/* =========================
+   CONFIRMATION MODAL
+   ========================= */
 
 .deletion-modal {
   position: fixed;
@@ -914,7 +940,7 @@ header::after {
 
   padding: 20px;
 
-  background: rgba(69, 36, 58, 0.45);
+  background: rgba(60, 47, 34, 0.45);
   backdrop-filter: blur(2px);
 }
 
@@ -922,31 +948,30 @@ header::after {
    specificity as .deletion-modal's own "display: flex" above, and author
    rules always win ties against the UA stylesheet - so without this,
    .deletion-modal { display: flex } keeps the modal visible even while
-   its `hidden` attribute is set/toggled by dashboard.js. This is what
-   made the modal appear on every dashboard load regardless of any actual
-   click, and made Cancel look like it did nothing (it DID clear the
-   `hidden` attribute correctly - the CSS just never reacted to it). */
+   its `hidden` attribute is set/toggled by dashboard.js. */
 .deletion-modal[hidden] {
   display: none;
 }
 
 .deletion-modal-card {
   width: min(480px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
 
-  background: var(--cream);
+  background: var(--surface);
   border: 3px solid white;
-  border-radius: 22px;
+  border-radius: var(--radius-lg);
 
   box-shadow:
     0 0 0 2px var(--border),
-    8px 8px 0 rgba(255, 114, 182, 0.25);
+    var(--shadow-lg);
 
   padding: 26px;
 }
 
 .deletion-modal-card h3 {
   margin-top: 0;
-  color: var(--hot-pink);
+  color: var(--ink);
 }
 
 #deletion-modal-action {
@@ -958,8 +983,8 @@ header::after {
   margin-top: 14px;
   padding: 10px 12px;
 
-  background: var(--lavender);
-  border-radius: 11px;
+  background: var(--surface-alt);
+  border-radius: var(--radius-sm);
 
   color: var(--ink);
   font-size: 13px;
@@ -970,38 +995,33 @@ header::after {
   margin-top: 12px;
   padding: 10px 12px;
 
-  background: var(--light-pink);
-  border: 2px dashed var(--hot-pink);
-  border-radius: 11px;
+  background: white;
+  border: 2px dashed var(--red);
+  border-radius: var(--radius-sm);
 
   color: var(--ink);
   font-size: 13px;
 }
 
-.deletion-modal-warning p {
-  margin: 0;
-}
+.deletion-modal-warning p { margin: 0; }
 
 .deletion-modal-user-step {
   margin-top: 12px;
   padding: 10px 12px;
 
-  background: var(--lavender);
-  border-radius: 11px;
+  background: var(--surface-alt);
+  border-radius: var(--radius-sm);
 
   color: var(--ink);
   font-size: 13px;
 }
 
-.deletion-modal-user-step p {
-  margin: 0;
-}
+.deletion-modal-user-step p { margin: 0; }
 
 .deletion-modal-actions {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-
   margin-top: 20px;
 }
 
@@ -1009,9 +1029,9 @@ header::after {
   margin-top: 12px;
   padding: 12px 14px;
 
-  background: var(--light-pink);
+  background: var(--surface-alt);
   border: 2px dashed var(--border);
-  border-radius: 13px;
+  border-radius: var(--radius-md);
 
   font-size: 13px;
 }
@@ -1035,4 +1055,46 @@ header::after {
   color: var(--ink);
   max-height: 220px;
   overflow-y: auto;
+}
+
+/* =========================
+   MERGE BAR
+   ========================= */
+
+.merge-bar p {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+
+/* =========================
+   MOBILE - card/action ownership must stay obvious on a narrow screen;
+   the primary action stays full-width and easy to tap.
+   ========================= */
+
+@media (max-width: 650px) {
+  .container {
+    width: calc(100% - 20px);
+  }
+
+  .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .review-actions .btn,
+  .current-state > .btn,
+  .current-state > form > .btn {
+    width: 100%;
+  }
+
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .toolbar form {
+    width: 100%;
+  }
 }

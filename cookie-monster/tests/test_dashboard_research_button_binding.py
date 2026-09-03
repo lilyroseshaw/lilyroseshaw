@@ -74,7 +74,9 @@ def _get_dashboard_soup(client_db):
 
 
 def _card_for(soup, company_id: int):
-    card = soup.find("div", class_="company-card", attrs={"data-id": str(company_id)})
+    # Not tag-specific (the card shell is a semantic <article>) - matched
+    # purely by its class/data-id, same as the browser/CSS would.
+    card = soup.find(class_="company-card", attrs={"data-id": str(company_id)})
     assert card is not None, f"no company-card rendered for id={company_id}"
     return card
 

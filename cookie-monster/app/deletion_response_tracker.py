@@ -16,9 +16,17 @@ Privacy/safety rules enforced here:
 - Cookie Monster never auto-replies to a company or sends anything in
   response to VERIFICATION_NEEDED/MORE_INFO_REQUIRED - those just update
   status and evidence for the user to act on themselves in their own Gmail.
+- A reply almost always quotes some or all of Cookie Monster's own
+  outgoing message back (Gmail/most clients do this automatically) - and
+  that outgoing text itself contains phrases the classifier looks for
+  ("identity verification", etc.). strip_quoted_reply()/_html_to_text()
+  below strip that quoted content BEFORE classification, so a company's
+  reply is never misclassified off text Cookie Monster itself wrote - see
+  their docstrings.
 """
 import base64
 import datetime
+import re
 
 from bs4 import BeautifulSoup
 from google.oauth2.credentials import Credentials
@@ -53,13 +61,67 @@ def _html_to_text(html: str) -> str:
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(["script", "style"]):
         tag.decompose()
+    # Quoted prior content in an HTML reply is virtually always wrapped in
+    # a <blockquote> (the standard HTML-email quoting tag every major
+    # client emits, including Gmail's own <blockquote class="gmail_quote">)
+    # or a "gmail_quote" div - drop it here, structurally, before it ever
+    # becomes plain text. This is more reliable than any text-pattern
+    # heuristic for HTML mail, and covers most of what strip_quoted_reply()
+    # below has to fall back to guessing at for plain text.
+    for tag in soup.select("blockquote, .gmail_quote"):
+        tag.decompose()
     return " ".join(soup.get_text(separator=" ").split())
+
+
+# A reply's own NEW words are, by overwhelming convention (top-posting),
+# followed by a quote HEADER and then the original quoted message - never
+# the reverse. Each pattern below is a well-established, high-precision
+# marker for exactly that boundary; deliberately narrow (no bare "From:"
+# line, no generic separator) so genuine new text is never mistaken for a
+# quote header and truncated.
+_QUOTE_BOUNDARY_PATTERNS = [
+    re.compile(r"^On .{0,150} wrote:\s*$", re.IGNORECASE),  # Gmail / Apple Mail / most clients
+    re.compile(r"^-{2,}\s*Original Message\s*-{2,}\s*$", re.IGNORECASE),  # classic Outlook
+    re.compile(r"^_{10,}$"),  # Outlook's separator line before a quoted header block
+]
+
+
+def strip_quoted_reply(text: str) -> str:
+    """Best-effort removal of quoted prior-message content from a PLAIN
+    TEXT reply (HTML replies are already handled structurally by
+    _html_to_text's blockquote removal above - this is the fallback for
+    clients that quote with plain '>' markers or a text quote header
+    instead). Conservative: only trims from the FIRST clearly-quoted
+    boundary onward - the first '>'-prefixed line, or a recognized quote-
+    header line (see _QUOTE_BOUNDARY_PATTERNS), whichever comes first. If
+    neither is found anywhere in the text, returns it completely
+    unchanged - this never invents a boundary or strips content it isn't
+    reasonably confident is quoted history.
+
+    This is what stops a reply that merely quotes Cookie Monster's own
+    outgoing deletion request (which itself contains phrases like
+    "identity verification" - see response_classify.py's patterns) from
+    having that quoted text mistaken for the company's own new words."""
+    lines = text.splitlines()
+    cutoff = len(lines)
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith(">"):
+            cutoff = i
+            break
+        if any(pattern.match(stripped) for pattern in _QUOTE_BOUNDARY_PATTERNS):
+            cutoff = i
+            break
+    return "\n".join(lines[:cutoff]).strip()
 
 
 def extract_body_text(message: dict) -> str:
     """Walks a Gmail message payload for text/plain (preferred) or text/html
     content. Returns "" if nothing decodable is found. The caller uses this
-    for classification only, in-process, and discards it afterward."""
+    for classification only, in-process, and discards it afterward. Does
+    NOT strip quoted content itself - see strip_quoted_reply(), applied
+    separately by the caller, so extract_body_text stays purely about MIME
+    parsing."""
     plain_texts: list[str] = []
     html_texts: list[str] = []
 
@@ -192,7 +254,11 @@ def check_company_response(
 
     last_classification = None
     for message in new_messages:
-        body_text = extract_body_text(message)  # transient - discarded at end of this loop iteration
+        # Transient - discarded at end of this loop iteration. Quoted prior
+        # content (almost always including Cookie Monster's own outgoing
+        # message) is stripped BEFORE classification - see
+        # strip_quoted_reply()'s docstring for why this matters.
+        body_text = strip_quoted_reply(extract_body_text(message))
         classification = classifier.classify(body_text)
         record_event(
             db, company.id,

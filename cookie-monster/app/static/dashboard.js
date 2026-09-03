@@ -1,12 +1,33 @@
-// Small progressive-enhancement script for the two-checkbox merge picker.
-// Everything else on this page works via plain HTML forms (no JS required).
-(function () {
-  const checkboxes = Array.from(document.querySelectorAll(".merge-pick"));
-  const keepInput = document.getElementById("merge-keep-id");
-  const otherInput = document.getElementById("merge-other-id");
-  const submitBtn = document.getElementById("merge-submit");
+// Dashboard interactivity. Three concerns, in order below:
+//   1. The two-checkbox merge picker.
+//   2. Generic progressive-enhancement AJAX for card-level actions
+//      (Research, Confirm/Reject/Reset, Check for responses, Save
+//      correction, Mark completed, attach-thread, and the "Delete my
+//      data" modal's own submit) - every one of these is a plain HTML
+//      <form> first; JS only intercepts it to avoid a full-page reload.
+//   3. The "Delete my data" confirmation modal itself.
+//
+// Every server route this page talks to ALREADY redirects (or renders)
+// back to the exact same company's card - see main.py's
+// _redirect_to_company_card(). The AJAX layer below never invents a
+// result: it fetches that same server-rendered response and swaps in
+// exactly the one <div id="company-{id}"> from it, verbatim. If anything
+// goes wrong (network failure, a non-2xx response, any JS exception), the
+// form is resubmitted as a real native POST - full page reload, the exact
+// pre-AJAX behavior - so a failure can never look like nothing happened.
 
-  function refresh() {
+(function () {
+  "use strict";
+
+  // ---- 1. Merge picker ----
+
+  function refreshMergePicker() {
+    const checkboxes = Array.from(document.querySelectorAll(".merge-pick"));
+    const keepInput = document.getElementById("merge-keep-id");
+    const otherInput = document.getElementById("merge-other-id");
+    const submitBtn = document.getElementById("merge-submit");
+    if (!keepInput || !otherInput || !submitBtn) return;
+
     const checked = checkboxes.filter((cb) => cb.checked);
     checkboxes.forEach((cb) => {
       cb.disabled = checked.length >= 2 && !cb.checked;
@@ -20,50 +41,138 @@
     }
   }
 
-  checkboxes.forEach((cb) => cb.addEventListener("change", refresh));
-  refresh();
-})();
+  function wireMergeCheckboxes(scopeEl) {
+    scopeEl.querySelectorAll(".merge-pick").forEach((cb) => {
+      if (cb.dataset.wired) return;
+      cb.dataset.wired = "1";
+      cb.addEventListener("change", refreshMergePicker);
+    });
+  }
 
-// "Delete my data" confirmation modal. The button never submits anything by
-// itself - it only opens this modal, populated from the button's own data-*
-// attributes (execution_capability/reason/consequences - all computed
-// server-side by deletion_engine.classify_execution_capability, the SAME
-// function the execute endpoint itself uses, so this modal can never
-// promise something execution won't actually do). The actual POST only
-// happens if the user clicks the approval button inside the modal.
-(function () {
+  // ---- 2. Generic card-level AJAX ----
+
+  function findCard(el) {
+    return el.closest(".company-card");
+  }
+
+  function swapCard(cardId, html) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const newCard = doc.getElementById("company-" + cardId);
+    const oldCard = document.getElementById("company-" + cardId);
+    if (!newCard || !oldCard) return false;
+    oldCard.replaceWith(newCard);
+    wireCard(newCard);
+    return true;
+  }
+
+  // Submits `form` via fetch instead of a real navigation. `cardId` is the
+  // company whose card should be refreshed once the response comes back -
+  // normally form.closest('.company-card'), but the "Delete my data"
+  // modal's form lives OUTSIDE any card, so it passes its own tracked id
+  // (see part 3 below) instead of relying on DOM position.
+  function submitFormAjax(form, cardId, button, onSwapped) {
+    const loadingText = form.dataset.loadingText || (button && button.dataset.loadingText);
+    if (button) {
+      button.disabled = true;
+      if (loadingText) button.textContent = loadingText;
+    }
+
+    fetch(form.action, { method: "POST", body: new FormData(form), credentials: "same-origin" })
+      .then((resp) => {
+        if (!resp.ok) throw new Error("check-response/execute failed: " + resp.status);
+        return resp.text();
+      })
+      .then((html) => {
+        if (!cardId || !swapCard(cardId, html)) {
+          window.location.reload();
+          return;
+        }
+        if (onSwapped) onSwapped();
+      })
+      .catch(() => {
+        // Never swallow a failure silently - fall back to a real submit,
+        // which reproduces the exact pre-AJAX (server-authoritative)
+        // behavior, including any error page.
+        form.dataset.forceNative = "1";
+        if (typeof form.requestSubmit === "function") {
+          form.requestSubmit();
+        } else {
+          form.submit();
+        }
+      });
+  }
+
+  function wireCardForms(scopeEl) {
+    scopeEl.querySelectorAll("form").forEach((form) => {
+      if (form.method.toLowerCase() !== "post") return;
+      if (form.dataset.ajaxWired) return;
+      form.dataset.ajaxWired = "1";
+      form.addEventListener("submit", (event) => {
+        if (form.dataset.forceNative) return; // the native-fallback resubmit above - let it through untouched
+        const card = findCard(form);
+        if (!card) return; // not a card-scoped form (merge/delete-all) - leave it as a normal submit
+        event.preventDefault();
+        const button = event.submitter || form.querySelector('button[type="submit"]');
+        submitFormAjax(form, card.dataset.id, button);
+      });
+    });
+  }
+
+  function wireCard(cardEl) {
+    wireCardForms(cardEl);
+    wireMergeCheckboxes(cardEl);
+    wireDeleteButtons(cardEl);
+  }
+
+  // ---- 3. "Delete my data" confirmation modal ----
+  // The button never submits anything by itself - it only opens this
+  // modal, populated from the button's own data-* attributes (execution
+  // capability/reason/consequences - all computed server-side by
+  // deletion_engine.classify_execution_capability, the SAME function the
+  // execute endpoint itself uses, so this modal can never promise
+  // something execution won't actually do). The actual POST only happens
+  // if the user clicks the approval button inside the modal.
+
   const modal = document.getElementById("deletion-modal");
-  if (!modal) return;
-
-  const titleEl = document.getElementById("deletion-modal-title");
-  const actionEl = document.getElementById("deletion-modal-action");
-  const detailsEl = document.getElementById("deletion-modal-details");
-  const consequencesEl = document.getElementById("deletion-modal-consequences");
-  const consequencesTextEl = document.getElementById("deletion-modal-consequences-text");
-  const userStepEl = document.getElementById("deletion-modal-user-step");
-  const userStepReasonEl = document.getElementById("deletion-modal-user-step-reason");
-  const emailPreviewEl = document.getElementById("deletion-modal-email");
-  const emailToEl = document.getElementById("deletion-modal-email-to");
-  const emailSubjectEl = document.getElementById("deletion-modal-email-subject");
-  const emailBodyEl = document.getElementById("deletion-modal-email-body");
-  const form = document.getElementById("deletion-modal-form");
-  const cancelBtn = document.getElementById("deletion-modal-cancel");
-  const submitBtn = document.getElementById("deletion-modal-submit");
+  let modalCompanyId = null;
 
   const SUBMIT_LABEL = {
     AUTO_EXECUTABLE: "Send this email",
     USER_STEP_REQUIRED: "Continue - I'll finish this myself",
     MANUAL_HANDOFF: "Open the verified page",
   };
+  const IN_FLIGHT_LABEL = {
+    AUTO_EXECUTABLE: "Sending…",
+    USER_STEP_REQUIRED: "Continuing…",
+    MANUAL_HANDOFF: "Opening…",
+  };
 
   function applyCapability(capability, reason) {
+    const submitBtn = document.getElementById("deletion-modal-submit");
+    const userStepEl = document.getElementById("deletion-modal-user-step");
+    const userStepReasonEl = document.getElementById("deletion-modal-user-step-reason");
     submitBtn.textContent = SUBMIT_LABEL[capability] || "Continue with deletion";
+    submitBtn.dataset.loadingText = IN_FLIGHT_LABEL[capability] || "Working…";
     const showUserStep = capability && capability !== "AUTO_EXECUTABLE" && reason;
     userStepReasonEl.textContent = reason || "";
     userStepEl.hidden = !showUserStep;
   }
 
   function openModal(btn) {
+    if (!modal) return;
+    const titleEl = document.getElementById("deletion-modal-title");
+    const actionEl = document.getElementById("deletion-modal-action");
+    const detailsEl = document.getElementById("deletion-modal-details");
+    const consequencesEl = document.getElementById("deletion-modal-consequences");
+    const consequencesTextEl = document.getElementById("deletion-modal-consequences-text");
+    const emailPreviewEl = document.getElementById("deletion-modal-email");
+    const emailToEl = document.getElementById("deletion-modal-email-to");
+    const emailSubjectEl = document.getElementById("deletion-modal-email-subject");
+    const emailBodyEl = document.getElementById("deletion-modal-email-body");
+    const form = document.getElementById("deletion-modal-form");
+    const submitBtn = document.getElementById("deletion-modal-submit");
+
+    modalCompanyId = btn.dataset.id;
     const name = btn.dataset.name || "this company";
     titleEl.textContent = "Delete my data — " + name;
     actionEl.textContent = btn.dataset.action || "";
@@ -103,25 +212,42 @@
   }
 
   function closeModal() {
-    modal.hidden = true;
+    if (modal) modal.hidden = true;
+    modalCompanyId = null;
   }
 
-  document.querySelectorAll(".delete-my-data-btn").forEach((btn) => {
-    btn.addEventListener("click", () => openModal(btn));
-  });
+  function wireDeleteButtons(scopeEl) {
+    scopeEl.querySelectorAll(".delete-my-data-btn").forEach((btn) => {
+      if (btn.dataset.ajaxWired) return;
+      btn.dataset.ajaxWired = "1";
+      btn.addEventListener("click", () => openModal(btn));
+    });
+  }
 
-  cancelBtn.addEventListener("click", closeModal);
-  modal.addEventListener("click", (event) => {
-    if (event.target === modal) closeModal();
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !modal.hidden) closeModal();
-  });
-  // Belt-and-suspenders against a double-click sending two POSTs from the
-  // SAME browser tab before the page navigates away - the authoritative
-  // guard is server-side (deletion_engine's per-company in-flight lock),
-  // this just avoids the wasted extra request in the common case.
-  form.addEventListener("submit", () => {
-    submitBtn.disabled = true;
-  });
+  if (modal) {
+    const cancelBtn = document.getElementById("deletion-modal-cancel");
+    const form = document.getElementById("deletion-modal-form");
+    const submitBtn = document.getElementById("deletion-modal-submit");
+
+    cancelBtn.addEventListener("click", closeModal);
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) closeModal();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !modal.hidden) closeModal();
+    });
+    form.addEventListener("submit", (event) => {
+      if (form.dataset.forceNative) return;
+      event.preventDefault();
+      const cardId = modalCompanyId;
+      // Stays open (button disabled, showing its in-flight label) until
+      // the response is back, so approving isn't followed by a moment of
+      // nothing happening - THEN closes once the swap (or fallback) runs.
+      submitFormAjax(form, cardId, submitBtn, closeModal);
+    });
+  }
+
+  // ---- Init ----
+  document.querySelectorAll(".company-card").forEach(wireCard);
+  refreshMergePicker();
 })();

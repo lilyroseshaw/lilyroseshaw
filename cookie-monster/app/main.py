@@ -108,12 +108,109 @@ def on_startup():
 
 def _status_counts(db) -> dict[str, int]:
     companies = db.query(Company).all()
+    ready = sum(1 for c in companies if c.deletion_status == DeletionStatus.READY)
+    sent = sum(1 for c in companies if c.deletion_status in _SENT_OR_LATER_STATUSES)
+    done = sum(1 for c in companies if c.deletion_status == DeletionStatus.COMPLETED)
     return {
         "total": len(companies),
         "confirmed": sum(1 for c in companies if c.status == "confirmed"),
         "pending": sum(1 for c in companies if c.status == "pending"),
         "rejected": sum(1 for c in companies if c.status == "rejected"),
+        # Dashboard-level progress summary (see the "Cleanup progress" bar
+        # in dashboard.html) - every number here is a plain count over
+        # actual DeletionStatus values already in the database, nothing
+        # inferred or invented.
+        "methods_ready": ready,
+        "requests_sent": sent,
+        "deleted": done,
     }
+
+
+# A company is "on its way" (stage >= 3, see _stage_index_for_company)
+# once a request has actually gone out or is otherwise underway - used
+# both for the dashboard-level "requests sent" count above and per-card
+# progress stage below, so the two can never disagree about what counts.
+_SENT_OR_LATER_STATUSES = {
+    DeletionStatus.SUBMITTED, DeletionStatus.USER_ACTION_REQUIRED, DeletionStatus.IN_PROGRESS,
+    DeletionStatus.VERIFICATION_NEEDED, DeletionStatus.MORE_INFO_REQUIRED, DeletionStatus.UNKNOWN_RESPONSE,
+}
+
+# The linear progress model shown in each confirmed company's card - see
+# dashboard.html's "progress-stepper". Purely a presentation grouping of
+# EXISTING DeletionStatus values (see deletion_constants.py) - never a new
+# source of truth, and never implies a stage happened without the
+# corresponding backend status actually being set. REJECTED (the company
+# itself declined) and Company.status == "rejected" (a discovery-level
+# non-company) are both terminal/off-pipeline and return None - they get
+# their own badge treatment instead of a stepper position.
+_STAGE_LABELS = ["Found", "Confirmed", "Method ready", "Sent", "Waiting", "Deleted"]
+
+_STAGE_2_STATUSES = {DeletionStatus.READY, DeletionStatus.FAILED}
+_STAGE_1_STATUSES = {
+    DeletionStatus.NOT_STARTED, DeletionStatus.METHOD_LOOKUP, DeletionStatus.UNKNOWN, DeletionStatus.NO_METHOD_FOUND,
+}
+
+
+def _stage_index_for_company(c: Company) -> int | None:
+    if c.status == "pending":
+        return 0
+    if c.status == "rejected":
+        return None
+    if c.deletion_status in _STAGE_1_STATUSES:
+        return 1
+    if c.deletion_status in _STAGE_2_STATUSES:
+        return 2
+    if c.deletion_status in _SENT_OR_LATER_STATUSES:
+        return 3 if c.deletion_status in (DeletionStatus.SUBMITTED, DeletionStatus.USER_ACTION_REQUIRED) else 4
+    if c.deletion_status == DeletionStatus.COMPLETED:
+        return 5
+    return None  # DeletionStatus.REJECTED - the company itself declined; a terminal, off-pipeline outcome
+
+
+# (badge_text, badge_tone) - tone drives color AND is always paired with
+# distinct text, never color alone (see the accessibility requirement that
+# status must never be color-only).
+_STATUS_BADGES = {
+    DeletionStatus.NOT_STARTED: ("New", "neutral"),
+    DeletionStatus.METHOD_LOOKUP: ("Researching", "info"),
+    DeletionStatus.UNKNOWN: ("Retrying", "warning"),
+    DeletionStatus.NO_METHOD_FOUND: ("Needs a look", "warning"),
+    DeletionStatus.READY: ("Ready", "success"),
+    DeletionStatus.USER_ACTION_REQUIRED: ("Action needed", "warning"),
+    DeletionStatus.SUBMITTED: ("Sent", "info"),
+    DeletionStatus.SUBMITTING: ("Sending", "info"),
+    DeletionStatus.IN_PROGRESS: ("In progress", "info"),
+    DeletionStatus.VERIFICATION_NEEDED: ("Verify", "warning"),
+    DeletionStatus.MORE_INFO_REQUIRED: ("Info needed", "warning"),
+    DeletionStatus.UNKNOWN_RESPONSE: ("Review reply", "warning"),
+    DeletionStatus.COMPLETED: ("Deleted", "success"),
+    DeletionStatus.REJECTED: ("Declined", "danger"),
+    DeletionStatus.FAILED: ("Failed", "danger"),
+}
+
+
+def _status_badge_for_company(c: Company) -> tuple[str, str]:
+    if c.status == "pending":
+        return ("Needs review", "neutral")
+    if c.status == "rejected":
+        return ("Not tracked", "neutral")
+    return _STATUS_BADGES.get(c.deletion_status, ("Unknown", "neutral"))
+
+
+def _card_meta_for_companies(companies: list[Company]) -> dict[int, dict]:
+    """Everything the card shell (header badge + progress stepper) needs,
+    computed once per dashboard render - kept out of the template so the
+    stage/badge mapping has exactly one home. See _stage_index_for_company
+    and _status_badge_for_company above."""
+    meta = {}
+    for c in companies:
+        badge_text, badge_tone = _status_badge_for_company(c)
+        meta[c.id] = {
+            "stage_index": _stage_index_for_company(c),
+            "badge_text": badge_text,
+            "badge_tone": badge_tone,
+        }
+    return meta
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -329,6 +426,22 @@ _FAILURE_REASON_LABELS = {
 }
 
 
+# Short human labels for a just-completed manual "Check for responses"
+# click - shown inline on that one company's card (see check-response
+# route + dashboard.html) so the user gets visible feedback without a
+# fabricated status change of any kind; these describe the ALREADY-final
+# deletion_status, never invent one.
+_CHECK_RESULT_STATUS_LABELS = {
+    DeletionStatus.IN_PROGRESS: "in progress",
+    DeletionStatus.VERIFICATION_NEEDED: "verification required",
+    DeletionStatus.MORE_INFO_REQUIRED: "more information requested",
+    DeletionStatus.UNKNOWN_RESPONSE: "a reply Cookie Monster couldn't confidently classify",
+    DeletionStatus.COMPLETED: "marked completed",
+    DeletionStatus.REJECTED: "declined",
+    DeletionStatus.SUBMITTED: "acknowledged",
+}
+
+
 def _research_info_for_companies(db, companies: list[Company]) -> dict[int, dict]:
     """Per-company research metadata for the dashboard's UNKNOWN/
     NO_METHOD_FOUND states (attempt count, last/next attempt time, a short
@@ -433,8 +546,19 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         response_tracking_enabled = google_oauth.has_readonly_scope(db)
         research_info = _research_info_for_companies(db, companies)
         execution_plans = _execution_plans_for_companies(db, companies)
+        card_meta = _card_meta_for_companies(companies)
     finally:
         db.close()
+
+    check_result = request.query_params.get("check_result")
+    check_status = request.query_params.get("check_status")
+    check_message = None
+    if check_result == "new_response":
+        check_message = "📬 Response found — " + _CHECK_RESULT_STATUS_LABELS.get(check_status, "updated") + "."
+    elif check_result == "no_new_response":
+        check_message = "No new response yet."
+    elif check_result == "check_failed":
+        check_message = "Couldn't check for a response right now — please try again shortly."
 
     context = {
         "request": request,
@@ -446,10 +570,14 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         "created": request.query_params.get("created"),
         "updated": request.query_params.get("updated"),
         "duplicate_id": request.query_params.get("duplicate"),
+        "checked_id": request.query_params.get("checked"),
+        "check_message": check_message,
         "send_enabled": send_enabled,
         "response_tracking_enabled": response_tracking_enabled,
         "research_info": research_info,
         "execution_plans": execution_plans,
+        "card_meta": card_meta,
+        "stage_labels": _STAGE_LABELS,
         "threshold": config.DELETION_RECIPE_FAILURE_THRESHOLD,
         "attach_preview": None,
         "attach_preview_error": None,
@@ -461,6 +589,22 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, status: str = "all", q: str = ""):
     return templates.TemplateResponse("dashboard.html", _dashboard_context(request, status, q))
+
+
+def _redirect_to_company_card(company_id: int, **params: str) -> RedirectResponse:
+    """Every single-company action redirects back to THAT company's own
+    card - never the bare top-of-page /dashboard - so a click never dumps
+    the user back to the top of a long list with no visible result. Plain
+    query params (never message bodies/secrets) plus a #company-{id} URL
+    fragment for the browser's own native scroll-to-anchor; this is also
+    the graceful no-JS fallback for dashboard.js's progressive-enhancement
+    AJAX layer (see static/dashboard.js), which normally intercepts these
+    same forms and swaps in just the returned card without navigating at
+    all - this redirect only actually runs when JS is unavailable/failed,
+    or as the target fetch() itself follows."""
+    query = "&".join(f"{key}={value}" for key, value in params.items())
+    suffix = f"&{query}" if query else ""
+    return RedirectResponse(f"/dashboard?checked={company_id}{suffix}#company-{company_id}", status_code=303)
 
 
 @app.post("/api/companies/{company_id}/confirm")
@@ -488,7 +632,7 @@ def _set_status(company_id: int, status: str):
         db.commit()
     finally:
         db.close()
-    return RedirectResponse("/dashboard", status_code=303)
+    return _redirect_to_company_card(company_id)
 
 
 @app.post("/api/companies/{company_id}/deletion/research")
@@ -506,7 +650,7 @@ def research_deletion_method(company_id: int):
         resolve_deletion_method(db, company, _research_provider, force=True)
     finally:
         db.close()
-    return RedirectResponse("/dashboard", status_code=303)
+    return _redirect_to_company_card(company_id)
 
 
 @app.get("/api/companies/{company_id}/deletion/preview")
@@ -555,14 +699,14 @@ def execute_company_deletion(company_id: int, force: bool = Form(False)):
         try:
             deletion_engine.execute_deletion(db, company, force_resend=force)
         except deletion_engine.DuplicateRequestWarning:
-            return RedirectResponse(f"/dashboard?duplicate={company_id}", status_code=303)
+            return _redirect_to_company_card(company_id, duplicate=company_id)
         except deletion_engine.ExecutionInFlightError:
-            return RedirectResponse("/dashboard", status_code=303)
+            return _redirect_to_company_card(company_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         db.close()
-    return RedirectResponse("/dashboard", status_code=303)
+    return _redirect_to_company_card(company_id)
 
 
 @app.post("/api/companies/{company_id}/deletion/check-response")
@@ -570,7 +714,15 @@ def check_company_response_now(company_id: int):
     """Manual 'Check for responses' - one explicit, on-demand check of this
     company's tracked thread, same logic the background worker uses.
     404s if response tracking isn't enabled or this company has no tracked
-    thread, since there'd be nothing to check."""
+    thread, since there'd be nothing to check.
+
+    Redirects back to the SAME company's card (query param + URL fragment)
+    with a short result summary, instead of dumping the user at the top of
+    a long dashboard with no feedback - see _dashboard_context's
+    'checked'/'check_result' handling. The summary is derived purely from
+    comparing the company's own before/after state (did the dedup marker
+    move, did the failure counter increment) - it never changes anything
+    itself just to have something to show."""
     db = get_session()
     try:
         company = db.get(Company, company_id)
@@ -584,10 +736,25 @@ def check_company_response_now(company_id: int):
         gmail_address = google_oauth.get_connected_address(db)
         if creds is None or gmail_address is None:
             raise HTTPException(status_code=400, detail="Gmail is not connected")
+
+        previous_last_response_id = company.deletion_last_response_message_id
+        previous_failures = company.deletion_response_check_failures
+        previous_status = company.deletion_status
+
         check_company_response(db, company, creds, gmail_address, _response_classifier)
+
+        if company.deletion_response_check_failures > previous_failures or (
+            company.deletion_status == DeletionStatus.FAILED and previous_status != DeletionStatus.FAILED
+        ):
+            result = "check_failed"
+        elif company.deletion_last_response_message_id != previous_last_response_id:
+            result = "new_response"
+        else:
+            result = "no_new_response"
+        status_after = company.deletion_status
     finally:
         db.close()
-    return RedirectResponse("/dashboard", status_code=303)
+    return _redirect_to_company_card(company_id, check_result=result, check_status=status_after)
 
 
 def _check_attach_eligible(db, company: Company) -> str | None:
@@ -701,7 +868,7 @@ def confirm_attach_thread(company_id: int, message_id: str = Form(...)):
         db.commit()
     finally:
         db.close()
-    return RedirectResponse("/dashboard", status_code=303)
+    return _redirect_to_company_card(company_id)
 
 
 @app.post("/api/companies/{company_id}/deletion/mark-completed")
@@ -718,7 +885,7 @@ def mark_deletion_completed(company_id: int, evidence_note: str = Form("")):
         deletion_engine.mark_user_completed(db, company, evidence_note)
     finally:
         db.close()
-    return RedirectResponse("/dashboard", status_code=303)
+    return _redirect_to_company_card(company_id)
 
 
 @app.post("/api/companies/{company_id}/correct")
@@ -734,7 +901,7 @@ def correct_company(company_id: int, name: str = Form(...), relationship_type: s
         db.commit()
     finally:
         db.close()
-    return RedirectResponse("/dashboard", status_code=303)
+    return _redirect_to_company_card(company_id)
 
 
 @app.post("/api/companies/merge")
