@@ -47,6 +47,13 @@ NEW_DELETION_COLUMNS: list[tuple[str, str, str | None]] = [
     ("deletion_last_response_message_id", "VARCHAR(100)", None),
     ("deletion_response_checked_at", "DATETIME", None),
     ("deletion_response_check_failures", "INTEGER", "0"),
+    # 24-hour chase (chase_engine.py).
+    ("waiting_on", "VARCHAR(20)", None),
+    ("next_followup_at", "DATETIME", None),
+    ("followup_attempt", "INTEGER", "0"),
+    ("last_followup_at", "DATETIME", None),
+    ("followup_locked_at", "DATETIME", None),
+    ("followups_paused", "BOOLEAN", "0"),
 ]
 
 

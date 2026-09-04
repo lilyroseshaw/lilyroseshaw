@@ -247,6 +247,12 @@ class EventType:
     # Always source=USER: nothing here is ever sent without a per-message
     # human approval click.
     MAIL_REPLY_SENT = "MAIL_REPLY_SENT"
+    # An automated 24-hour chase follow-up was sent, in the same tracked
+    # Gmail thread, via a deterministic template - never an LLM. evidence
+    # carries {"attempt": N, "gmail_message_id":..., "gmail_thread_id":...}
+    # and, when the send was discovered via reconciliation rather than
+    # observed directly, {"recovered": true} - see chase_engine.py.
+    FOLLOWUP_SENT = "FOLLOWUP_SENT"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
@@ -254,7 +260,23 @@ class EventType:
         COMPLETION_CONFIRMED, USER_MARKED_COMPLETE, REQUEST_REJECTED, FAILED, RETRY,
         RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED, RESEARCH_DEFERRED,
         EXECUTION_STARTED, EXECUTION_INTERRUPTED, MAIL_REPLY_SENT,
+        FOLLOWUP_SENT,
     }
+
+
+class WaitingOn:
+    """Whose move it is on an active chase case - see chase_engine.py.
+    Deliberately separate from DeletionStatus: DeletionStatus is the
+    PRIVACY-facing outcome (what the company actually said), WaitingOn is
+    the GAME/scheduling-facing question of who the chase clock is
+    currently blocked on. Never conflate the two - see
+    chase_engine.derive_waiting_on for the one place DeletionStatus (plus
+    a narrow human-action signal) maps onto this."""
+    COMPANY = "COMPANY"
+    USER = "USER"
+    ESCALATION_NEEDED = "ESCALATION_NEEDED"
+
+    ALL = {COMPANY, USER, ESCALATION_NEEDED}
 
 
 class EventSource:

@@ -172,7 +172,7 @@
           {% endif %}
 
         {% elif c.deletion_status == "IN_PROGRESS" %}
-          <p class="state-line">⏳ {{ c.name }} is on it - waiting on them.</p>
+          <p class="state-line">⏳ Request received - no action needed, waiting on {{ c.name }}.</p>
 
         {% elif c.deletion_status == "VERIFICATION_NEEDED" %}
           <p class="state-line state-warning">🔒 {{ c.name }} needs you to verify your identity or email.</p>
@@ -204,13 +204,32 @@
           >Send again</button>
         {% endif %}
 
+        {% if c.waiting_on == "COMPANY" and c.deletion_thread_id %}
+        <div class="chase-state">
+          <p class="chase-state-title">📬 WAITING ON {{ c.name|upper }}</p>
+          <p class="chase-state-detail">Request received. Baker's Dozen is following up automatically until this is resolved.</p>
+          <p class="chase-state-meta">
+            {% if c.followups_paused %}Follow-ups paused.{% elif c.next_followup_at %}Next follow-up: {{ c.next_followup_at|relative_time(future=True) }}{% endif %}
+            {% if c.deletion_response_checked_at %} · Last checked: {{ c.deletion_response_checked_at|relative_time }}{% endif %}
+          </p>
+          <form method="post" action="/api/companies/{{ c.id }}/deletion/{{ 'resume-followups' if c.followups_paused else 'pause-followups' }}" data-loading-text="{{ 'Resuming…' if c.followups_paused else 'Pausing…' }}">
+            <button type="submit" class="btn btn-secondary btn-small">{{ 'Resume follow-ups' if c.followups_paused else 'Pause follow-ups' }}</button>
+          </form>
+        </div>
+        {% elif c.waiting_on == "ESCALATION_NEEDED" %}
+        <div class="chase-state chase-state-escalation">
+          <p class="chase-state-title">⚠️ NEEDS YOUR ATTENTION</p>
+          <p class="chase-state-detail">{{ c.name }} responded in a way that needs a human decision - automatic follow-ups have stopped.</p>
+        </div>
+        {% endif %}
+
         {% if checked_id and checked_id|int == c.id and check_message %}
-        <p class="check-response-result" role="status">{{ check_message }}</p>
+        <p class="check-response-result" role="status" data-check-result="{{ check_result }}">{{ check_message }}</p>
         {% endif %}
 
         {% if response_tracking_enabled and c.deletion_thread_id and c.deletion_status in
               ("SUBMITTED", "IN_PROGRESS", "VERIFICATION_NEEDED", "MORE_INFO_REQUIRED", "UNKNOWN_RESPONSE") %}
-        <form method="post" action="/api/companies/{{ c.id }}/deletion/check-response" data-loading-text="Checking…">
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/check-response" data-loading-text="Checking…" class="check-response-form" data-company-id="{{ c.id }}" data-company-name="{{ c.name|e }}">
           <button type="submit" class="btn btn-primary btn-small">Check for reply</button>
         </form>
         {% endif %}

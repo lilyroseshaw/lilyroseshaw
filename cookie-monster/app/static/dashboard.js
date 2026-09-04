@@ -105,6 +105,7 @@
   function wireCardForms(scopeEl) {
     scopeEl.querySelectorAll("form").forEach((form) => {
       if (form.method.toLowerCase() !== "post") return;
+      if (form.classList.contains("check-response-form")) return; // handled by its own state machine, part 4 below - must never fall back to a native reload
       if (form.dataset.ajaxWired) return;
       form.dataset.ajaxWired = "1";
       form.addEventListener("submit", (event) => {
@@ -122,6 +123,7 @@
     wireCardForms(cardEl);
     wireMergeCheckboxes(cardEl);
     wireDeleteButtons(cardEl);
+    wireCheckResponseForms(cardEl);
   }
 
   // ---- 3. "Delete my data" confirmation modal ----
@@ -244,6 +246,69 @@
       // the response is back, so approving isn't followed by a moment of
       // nothing happening - THEN closes once the swap (or fallback) runs.
       submitFormAjax(form, cardId, submitBtn, closeModal);
+    });
+  }
+
+  // ---- 4. Dedicated "Check for reply" state machine ----
+  // Locked UX requirement: DEFAULT -> CHECKING (disabled, no double-click)
+  // -> NEW REPLY / NO NEW REPLY / ERROR, all shown in place on the card.
+  // Unlike every other card form, the ERROR state must NEVER fall back to
+  // a native full-page submit/reload - a failed check has to look like a
+  // failed check, not like nothing happened and not like a random reload.
+  // So this intentionally does NOT go through wireCardForms/submitFormAjax.
+
+  function findOrCreateResultEl(form) {
+    const card = findCard(form);
+    if (!card) return null;
+    let el = card.querySelector(".check-response-result");
+    if (!el) {
+      el = document.createElement("p");
+      el.className = "check-response-result";
+      el.setAttribute("role", "status");
+      form.insertAdjacentElement("beforebegin", el);
+    }
+    return el;
+  }
+
+  function setCheckResult(form, kind, text) {
+    const el = findOrCreateResultEl(form);
+    if (!el) return;
+    el.dataset.checkResult = kind;
+    el.textContent = text;
+  }
+
+  function wireCheckResponseForms(scopeEl) {
+    scopeEl.querySelectorAll(".check-response-form").forEach((form) => {
+      if (form.dataset.checkWired) return;
+      form.dataset.checkWired = "1";
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const button = form.querySelector('button[type="submit"]');
+        if (button.disabled) return; // already checking - no double-click
+        const originalLabel = button.textContent;
+        button.disabled = true;
+        button.textContent = "Checking…";
+        setCheckResult(form, "checking", "Checking…");
+
+        fetch(form.action, { method: "POST", body: new FormData(form), credentials: "same-origin" })
+          .then((resp) => {
+            if (!resp.ok) throw new Error("check-response failed: " + resp.status);
+            return resp.text();
+          })
+          .then((html) => {
+            const cardId = form.dataset.companyId;
+            if (!cardId || !swapCard(cardId, html)) {
+              // Card couldn't be located in the response - stay in place
+              // and report it as a failure rather than reloading the page.
+              throw new Error("check-response: card not found in response");
+            }
+          })
+          .catch(() => {
+            button.disabled = false;
+            button.textContent = originalLabel;
+            setCheckResult(form, "check_failed", "Couldn't check right now. Try again.");
+          });
+      });
     });
   }
 

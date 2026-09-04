@@ -108,6 +108,32 @@ class Company(Base):
     # mechanism itself failing to run.
     deletion_response_check_failures: Mapped[int] = mapped_column(Integer, default=0)
 
+    # --- 24-hour chase (see chase_engine.py) ---
+    # Whose move it is right now - COMPANY/USER/ESCALATION_NEEDED/None
+    # (None = not an active chase case at all, e.g. never sent or already
+    # terminal). Drives whether the scheduler will ever touch this company.
+    waiting_on: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # When the next automated follow-up is due - None means nothing is
+    # scheduled (paused, waiting on the user, or terminal). Only ever
+    # advanced by a REAL event: the original send, a confirmed follow-up
+    # send, or the user completing a required action - never by a generic
+    # company acknowledgment, which must NOT push this further out.
+    next_followup_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    # How many follow-ups Baker's Dozen has itself actually sent (never
+    # incremented by company replies) - internal audit/idempotency counter,
+    # never shown to the company in the follow-up text itself.
+    followup_attempt: Mapped[int] = mapped_column(Integer, default=0)
+    last_followup_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    # Set immediately before attempting a follow-up Gmail send, cleared on
+    # a definite outcome (success or confirmed-not-sent) - see
+    # chase_engine.reconcile_ambiguous_followup for what happens if a
+    # process dies with this still set.
+    followup_locked_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    # User-controlled, independent of waiting_on - "why is nothing
+    # scheduled" must always be distinguishable as paused vs waiting-on-
+    # user vs escalation vs terminal, never collapsed into one flag.
+    followups_paused: Mapped[bool] = mapped_column(default=False)
+
 
 class DeletionRecipe(Base):
     """The shared, reusable cache/knowledge base: 'how does this domain handle

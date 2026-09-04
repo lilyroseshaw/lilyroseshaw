@@ -91,8 +91,8 @@ def test_check_response_redirects_to_company_card_with_new_response_result(tmp_p
 
     dashboard_resp = client.get(location.split("#")[0])
     html = dashboard_resp.text
-    assert "New mail" in html
-    assert "verification required" in html.lower()
+    assert "New reply from Goop Kitchen" in html
+    assert "action needed" in html.lower()
     assert f'id="company-{company.id}"' in html
     assert "just-updated" in html
 

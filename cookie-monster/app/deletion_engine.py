@@ -57,7 +57,7 @@ import threading
 
 from sqlalchemy.orm import Session
 
-from app import google_oauth
+from app import chase_engine, google_oauth
 from app.deletion_constants import (
     DeletionMethod,
     DeletionStatus,
@@ -411,6 +411,10 @@ def _execute_email_request(db: Session, company: Company, plan: ExecutionPlan, n
         db, company.id, EventType.EMAIL_SENT,
         evidence={"gmail_message_id": message_id, "gmail_thread_id": thread_id, "sent_to": plan.draft["to"]},
     )
+    # Approving this send is what authorizes the 24-hour automatic chase
+    # (see chase_engine.py) - disclosed once at approval time, never a
+    # per-follow-up consent prompt.
+    chase_engine.on_request_sent(company, now)
 
 
 def _route_to_user_action(db: Session, company: Company, now: datetime.datetime) -> None:

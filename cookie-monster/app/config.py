@@ -111,6 +111,38 @@ RESPONSE_CHECK_BACKOFF_MAX_HOURS = float(os.environ.get("RESPONSE_CHECK_BACKOFF_
 # Max threads checked per background-worker tick.
 RESPONSE_CHECK_BATCH_SIZE = int(os.environ.get("RESPONSE_CHECK_BATCH_SIZE", "5"))
 
+# --- 24-hour chase (chase_engine.py) ---
+# How often Baker's Dozen follows up on its own, while waiting_on=COMPANY.
+FOLLOWUP_INTERVAL_HOURS = float(os.environ.get("FOLLOWUP_INTERVAL_HOURS", "24"))
+# A follow-up lock older than this is treated as ambiguous (the process
+# that set it likely crashed or hung) and triggers reconciliation against
+# the tracked Gmail thread before the case can be touched again.
+FOLLOWUP_LOCK_STALE_MINUTES = float(os.environ.get("FOLLOWUP_LOCK_STALE_MINUTES", "10"))
+# If reconciliation finds NO evidence the send happened, retry this soon
+# rather than waiting a full interval or hot-looping every tick.
+FOLLOWUP_RECONCILE_RETRY_MINUTES = float(os.environ.get("FOLLOWUP_RECONCILE_RETRY_MINUTES", "15"))
+# Minimum total time since a lock was first set - with the tracked thread
+# checked and showing no evidence of the send THROUGHOUT that whole window,
+# not just once - before a "not found" result is trusted enough to permit
+# a fresh (potentially duplicate-risking) resend. Gmail's API gives no
+# documented guarantee that a just-accepted send is IMMEDIATELY visible via
+# threads().get() the instant it returns 200 - in the crash-after-Gmail-
+# accepted-but-before-we-recorded-it window, a single early "not found"
+# check could in principle be racing a brief propagation lag, not a
+# genuine non-send. Requiring the thread to still show nothing after this
+# much elapsed wall-clock time (checked on every worker tick in between -
+# see reconcile_stale_followup_locks) makes that far less likely than
+# trusting one single check. Must be large relative to any plausible
+# Gmail indexing lag (expected to be sub-second to low seconds in normal
+# operation) - this default is a deliberately generous margin, not a
+# measured bound.
+FOLLOWUP_RECONCILE_CONFIRM_MINUTES = float(os.environ.get("FOLLOWUP_RECONCILE_CONFIRM_MINUTES", "20"))
+# If a lock stays unresolved (reconciliation itself keeps failing) past
+# this age, stop retrying silently and surface it for manual review.
+FOLLOWUP_RECONCILE_MAX_AGE_HOURS = float(os.environ.get("FOLLOWUP_RECONCILE_MAX_AGE_HOURS", "24"))
+# Max chase follow-ups sent per background-worker tick.
+FOLLOWUP_BATCH_SIZE = int(os.environ.get("FOLLOWUP_BATCH_SIZE", "5"))
+
 
 def require_google_credentials() -> None:
     if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:

@@ -10,7 +10,7 @@ from fastapi.templating import Jinja2Templates
 from googleapiclient.errors import HttpError
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import config, deletion_engine, google_oauth, mail
+from app import chase_engine, config, deletion_engine, google_oauth, mail
 from app.aggregator import aggregate, store
 from app.db import get_session, init_db
 from app.deletion_constants import (
@@ -36,6 +36,33 @@ app = FastAPI(title="Cookie Monster")
 app.add_middleware(SessionMiddleware, secret_key=config.SESSION_SECRET)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+
+
+def _relative_time(dt: datetime.datetime | None, future: bool = False) -> str:
+    """Plain-language relative time for chase-state display ("2 hours
+    ago" / "in 6 hours") - display only, never used for any scheduling
+    decision (chase_engine.py always compares real datetimes)."""
+    if dt is None:
+        return ""
+    now = datetime.datetime.utcnow()
+    delta = (dt - now) if future else (now - dt)
+    seconds = int(delta.total_seconds())
+    if seconds < 60:
+        return "in under a minute" if future else "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        unit = f"{minutes} minute{'s' if minutes != 1 else ''}"
+    else:
+        hours = minutes // 60
+        if hours < 24:
+            unit = f"{hours} hour{'s' if hours != 1 else ''}"
+        else:
+            days = hours // 24
+            unit = f"{days} day{'s' if days != 1 else ''}"
+    return f"in {unit}" if future else f"{unit} ago"
+
+
+templates.env.filters["relative_time"] = _relative_time
 
 # TEMPORARY diagnostic logging for the OAuth callback ("Invalid OAuth state
 # or missing code") investigation - logs booleans/hostnames only, never the
@@ -603,6 +630,11 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         execution_plans = _execution_plans_for_companies(db, companies)
         card_meta = _card_meta_for_companies(companies)
         unread_mail_count = mail.unread_mail_count(db)
+        checked_id_raw = request.query_params.get("checked")
+        checked_company_name = None
+        if checked_id_raw and checked_id_raw.isdigit():
+            checked_company = db.get(Company, int(checked_id_raw))
+            checked_company_name = checked_company.name if checked_company else None
     finally:
         db.close()
 
@@ -610,7 +642,12 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
     check_status = request.query_params.get("check_status")
     check_message = None
     if check_result == "new_response":
-        check_message = "New mail — " + _CHECK_RESULT_STATUS_LABELS.get(check_status, "updated") + ". See your mailbox for the full letter."
+        who = checked_company_name or "them"
+        check_message = f"New reply from {who}."
+        if check_status and check_status not in ("VERIFICATION_NEEDED", "MORE_INFO_REQUIRED"):
+            check_message += " No action needed — Baker's Dozen is tracking this."
+        elif check_status:
+            check_message += " Action needed — see below."
     elif check_result == "no_new_response":
         check_message = "No new reply yet — checked just now."
     elif check_result == "check_failed":
@@ -628,6 +665,7 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         "duplicate_id": request.query_params.get("duplicate"),
         "checked_id": request.query_params.get("checked"),
         "check_message": check_message,
+        "check_result": check_result,
         "send_enabled": send_enabled,
         "response_tracking_enabled": response_tracking_enabled,
         "research_info": research_info,
@@ -812,6 +850,34 @@ def check_company_response_now(company_id: int):
     finally:
         db.close()
     return _redirect_to_company_card(company_id, check_result=result, check_status=status_after)
+
+
+@app.post("/api/companies/{company_id}/deletion/pause-followups")
+def pause_followups(company_id: int):
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        chase_engine.pause_followups(company)
+        db.commit()
+    finally:
+        db.close()
+    return _redirect_to_company_card(company_id)
+
+
+@app.post("/api/companies/{company_id}/deletion/resume-followups")
+def resume_followups(company_id: int):
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        chase_engine.resume_followups(company, datetime.datetime.utcnow())
+        db.commit()
+    finally:
+        db.close()
+    return _redirect_to_company_card(company_id)
 
 
 def _check_attach_eligible(db, company: Company) -> str | None:

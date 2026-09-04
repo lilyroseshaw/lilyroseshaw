@@ -939,6 +939,52 @@ textarea:focus {
   font-weight: 700;
 }
 
+.check-response-result[data-check-result="check_failed"] {
+  color: var(--red-deep);
+  border-color: var(--red);
+}
+
+/* Persistent chase-state block (see chase_engine.py) - always visible
+   while Baker's Dozen is auto-following-up, never tucked behind Details,
+   per the "every click must visibly acknowledge the action" / "never
+   make someone open Details to learn whether something worked" rule. */
+.chase-state {
+  margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+
+  background: var(--surface-alt);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+}
+
+.chase-state-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.chase-state-detail {
+  margin: var(--sp-1) 0 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.chase-state-meta {
+  margin: var(--sp-1) 0 var(--sp-2);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chase-state-escalation {
+  border-color: var(--red);
+}
+
+.chase-state-escalation .chase-state-title {
+  color: var(--red-deep);
+}
+
 .attach-thread-block {
   margin-top: var(--sp-2);
 }

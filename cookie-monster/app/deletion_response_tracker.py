@@ -42,7 +42,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.errors import HttpError
 from sqlalchemy.orm import Session
 
-from app import config, google_oauth, mail
+from app import chase_engine, config, google_oauth, mail
 from app.deletion_constants import DeletionStatus, EventType
 from app.deletion_events import record_event
 from app.models import Company
@@ -266,6 +266,8 @@ def check_company_response(
             # meaningfully failed, not just one poll attempt.
             company.deletion_status = DeletionStatus.FAILED
             company.deletion_error = "The tracked Gmail thread could not be found (it may have been deleted)."
+            company.waiting_on = None
+            company.next_followup_at = None
             record_event(
                 db, company.id, EventType.FAILED,
                 evidence={"reason": "thread_not_found", "http_status": 404},
@@ -308,6 +310,8 @@ def check_company_response(
         return
 
     last_classification = None
+    last_message_body = ""
+    last_message_occurred_at = now
     for message in new_messages:
         # Quoted prior content (almost always including Cookie Monster's own
         # outgoing message) is stripped BEFORE classification AND before
@@ -339,6 +343,8 @@ def check_company_response(
         mail.record_inbound_mail_message(db, company, message, body_text, classification)
         company.deletion_last_response_message_id = message.get("id")
         last_classification = classification
+        last_message_body = body_text
+        last_message_occurred_at = mail._occurred_at(message)
 
     if last_classification is not None:
         company.deletion_status = last_classification.status
@@ -352,6 +358,7 @@ def check_company_response(
         }
         if last_classification.status == DeletionStatus.COMPLETED:
             company.deletion_completed_at = now
+        chase_engine.on_reply_classified(company, last_classification.status, last_message_body, last_message_occurred_at)
 
     db.commit()
 

@@ -33,6 +33,7 @@ import email.utils
 
 from sqlalchemy.orm import Session
 
+from app import chase_engine
 from app.deletion_constants import DeletionStatus, EventSource, EventType
 from app.deletion_events import record_event
 from app.models import Company, DeletionRecipe, MailMessage
@@ -352,6 +353,10 @@ def send_mailbox_reply(db: Session, company: Company, kind: str, creds, gmail_ad
         db, company.id, EventType.MAIL_REPLY_SENT, source=EventSource.USER,
         evidence={"gmail_message_id": message_id, "gmail_thread_id": thread_id, "reply_kind": kind},
     )
+    # An approved reply the user just sent is "the user did the thing only
+    # they could do" - the chase resumes with a fresh 24h window (see
+    # chase_engine.py).
+    chase_engine.on_user_action_completed(company, now)
     db.commit()
     return row
 
