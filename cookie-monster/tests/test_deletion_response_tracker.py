@@ -10,7 +10,9 @@ from sqlalchemy.orm import sessionmaker
 from app import chase_engine, config, mail
 from app.db import Base
 from app.deletion_constants import DeletionStatus, EventType, WaitingOn
+from app.deletion_events import record_event
 from app.deletion_response_tracker import (
+    _find_legacy_acknowledgment_event,
     check_company_response,
     extract_body_text,
     get_companies_due_for_check,
@@ -601,3 +603,313 @@ def test_process_stale_unknown_responses_batch_entry_point(db):
     assert count == 1
     assert c1.deletion_status == DeletionStatus.IN_PROGRESS
     assert c2.deletion_status == DeletionStatus.UNKNOWN_RESPONSE  # untouched, still genuinely unclear
+
+
+# =========================================================================
+# Legacy fallback: real pre-mailbox-persistence UNKNOWN_RESPONSE cases
+# (the real MALK Organics case - company 55 - has a stored
+# deletion_last_response_message_id, a historical COMPANY_ACKNOWLEDGED
+# DeletionEvent carrying the exact quote, and ZERO MailMessage rows at
+# all, because it was classified before MailMessage persistence existed.
+# The MailMessage-based reconciliation above can never find it - not a
+# bug, an accurate reflection of what the tracker captured at the time.)
+# =========================================================================
+
+def _seed_legacy_unknown_response(
+    db, company, message_id="legacy-m1", text=MALK_ACKNOWLEDGMENT_TEXT,
+    event_type=EventType.COMPANY_ACKNOWLEDGED, occurred_at=None, quote=None,
+):
+    """Reproduces the EXACT real MALK legacy shape: a historical
+    DeletionEvent recorded before MailMessage persistence existed, with
+    NO corresponding MailMessage row at all - the absence is the point,
+    never something this helper (or the code under test) papers over."""
+    quote = text[:200] if quote is None else quote
+    event = record_event(
+        db, company.id, event_type,
+        evidence={"quote": quote, "confidence": "low", "message_id": message_id},
+    )
+    if occurred_at is not None:
+        event.occurred_at = occurred_at
+    company.deletion_last_response_message_id = message_id
+    company.deletion_status = DeletionStatus.UNKNOWN_RESPONSE
+    company.deletion_evidence = {
+        "type": "gmail_reply", "quote": quote, "confidence": "low",
+        "classified_at": datetime.datetime.utcnow().isoformat(),
+    }
+    db.commit()
+    return event
+
+
+# --- A: exact real MALK legacy shape ---
+
+def test_legacy_reconciliation_reclassifies_real_malk_shape(db):
+    reply_time = datetime.datetime.utcnow() - datetime.timedelta(days=3)
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_legacy_unknown_response(db, company, message_id="1a068922612316c0", occurred_at=reply_time)
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 0
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is True
+    assert company.deletion_status == DeletionStatus.IN_PROGRESS
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert company.deletion_evidence["reclassified"] is True
+    assert company.deletion_evidence["legacy_reconciliation"] is True
+    assert company.deletion_evidence["source_message_id"] == "1a068922612316c0"
+
+    expected = reply_time + datetime.timedelta(hours=config.FOLLOWUP_INTERVAL_HOURS)
+    assert abs((company.next_followup_at - expected).total_seconds()) < 2
+    assert company.next_followup_at < datetime.datetime.utcnow()  # already overdue
+
+    # Cursor untouched, and still no MailMessage fabricated:
+    assert company.deletion_last_response_message_id == "1a068922612316c0"
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 0
+
+
+# --- B: matching legacy event exists but message_id differs -> no-op ---
+
+def test_legacy_reconciliation_ignores_event_with_different_message_id(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_legacy_unknown_response(db, company, message_id="other-message-id")
+    company.deletion_last_response_message_id = "the-actual-cursor-message-id"
+    db.commit()
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE
+    assert company.waiting_on is None
+
+
+# --- C: legacy event has no quote -> no-op ---
+
+def test_legacy_reconciliation_ignores_event_without_quote(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_legacy_unknown_response(db, company, message_id="m-no-quote", quote="")
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE
+
+
+# --- D: arbitrary/outbound event with matching-looking evidence -> no-op ---
+
+def test_legacy_reconciliation_ignores_non_candidate_event_types(db):
+    """An EMAIL_SENT event that happens to carry a matching message_id and
+    a quote-shaped field must never be mistaken for an inbound-reply
+    classification - only the exact set of event types
+    check_company_response itself ever uses for a classified reply are
+    eligible candidates."""
+    company = _company(db, deletion_method="EMAIL_REQUEST", deletion_last_response_message_id="m-outbound")
+    company.deletion_status = DeletionStatus.UNKNOWN_RESPONSE
+    db.commit()
+    record_event(
+        db, company.id, EventType.EMAIL_SENT,
+        evidence={"message_id": "m-outbound", "quote": MALK_ACKNOWLEDGMENT_TEXT, "gmail_message_id": "m-outbound"},
+    )
+    db.commit()
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE
+
+
+# --- E: legacy quote remains genuinely UNKNOWN -> no-op ---
+
+def test_legacy_reconciliation_noop_when_still_unknown(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_legacy_unknown_response(db, company, message_id="m-still-unclear", text="Thanks for your email!")
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE
+
+
+# --- F: existing current MailMessage path still works unchanged, and is
+# always preferred over the legacy fallback when both exist ---
+
+def test_message_row_path_is_preferred_over_legacy_event(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    message_row = _seed_stale_unknown_response(db, company, gmail_message_id="dual-1")
+    # A legacy-looking event for the SAME message id, with DIFFERENT text -
+    # if the legacy path won by mistake, this text would end up as the quote.
+    record_event(
+        db, company.id, EventType.COMPANY_ACKNOWLEDGED,
+        evidence={"message_id": "dual-1", "quote": "DIFFERENT TEXT should never be used"},
+    )
+    db.commit()
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is True
+    assert "DIFFERENT TEXT" not in str(company.deletion_evidence)
+    assert company.deletion_evidence.get("legacy_reconciliation") is None
+    db.refresh(message_row)
+    assert message_row.classification_status == DeletionStatus.IN_PROGRESS
+
+
+# --- G: reconciliation run twice -> one transition, one new audit event,
+# no duplicates (idempotent even on a direct repeated call, not just via
+# the batch query's own UNKNOWN_RESPONSE filter) ---
+
+def test_legacy_reconciliation_is_idempotent_across_repeated_calls(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_legacy_unknown_response(db, company, message_id="m-idempotent")
+    events_before = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count()  # the original legacy event
+
+    first = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+    assert first is True
+    events_after_first = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count()
+    assert events_after_first == events_before + 1
+
+    second = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+    assert second is False  # no longer UNKNOWN_RESPONSE - not eligible anymore
+    events_after_second = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count()
+    assert events_after_second == events_after_first  # no duplicate audit event
+
+    # Also exercise the actual batch entry point the worker uses:
+    third_batch_count = process_stale_unknown_responses(db, ResponseClassifier())
+    assert third_batch_count == 0
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == events_after_first
+
+
+# --- H: existing non-UNKNOWN case -> untouched, even on a direct call ---
+
+def test_legacy_reconciliation_direct_call_on_non_unknown_company_is_noop(db):
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.IN_PROGRESS,
+        deletion_last_response_message_id="whatever",
+    )
+    db.commit()
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.IN_PROGRESS
+
+
+# --- I: legacy old reply overdue -> at most ONE catch-up follow-up, then
+# +24h from actual successful send ---
+
+def test_legacy_reconciliation_overdue_sends_one_catchup_then_resumes_cadence(db):
+    reply_time = datetime.datetime.utcnow() - datetime.timedelta(days=6)
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_legacy_unknown_response(db, company, message_id="m-catchup", occurred_at=reply_time)
+    reclassify_stale_unknown_response(db, company, ResponseClassifier())
+    assert company in chase_engine.get_companies_due_for_followup(db)
+
+    send_started = datetime.datetime.utcnow()
+    with patch("app.chase_engine._send_followup_email", return_value={"id": "sent-1", "threadId": "thread123"}) as mock_send:
+        sent_count = chase_engine.process_followups(db, creds=MagicMock(), gmail_address="me@gmail.com")
+    send_finished = datetime.datetime.utcnow()
+
+    assert sent_count == 1
+    assert mock_send.call_count == 1  # exactly one catch-up, never one per missed day
+    assert company.followup_attempt == 1
+
+    expected_min = send_started + datetime.timedelta(hours=config.FOLLOWUP_INTERVAL_HOURS)
+    expected_max = send_finished + datetime.timedelta(hours=config.FOLLOWUP_INTERVAL_HOURS)
+    assert expected_min <= company.next_followup_at <= expected_max
+    assert company not in chase_engine.get_companies_due_for_followup(db)  # cadence resumed, not repeated
+
+
+# --- Provenance exclusion: a reconciliation-generated audit event must
+# NEVER become eligible as the historical source for another
+# reconciliation, even alongside the top-level UNKNOWN_RESPONSE status
+# guard - enforced independently at the evidence-selection layer. ---
+
+def test_legacy_finder_excludes_reconciliation_generated_events(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    genuine = record_event(
+        db, company.id, EventType.COMPANY_ACKNOWLEDGED,
+        evidence={"message_id": "m-provenance", "quote": MALK_ACKNOWLEDGMENT_TEXT[:200], "confidence": "low"},
+    )
+    genuine.occurred_at = datetime.datetime.utcnow() - datetime.timedelta(days=5)
+    db.commit()
+    # A later, reconciliation-generated event for the SAME message id -
+    # must never be treated as a legitimate historical source, even
+    # though it otherwise looks like a perfectly good candidate (same
+    # message_id, safe event type, non-empty quote).
+    reconciled = record_event(
+        db, company.id, EventType.COMPANY_ACKNOWLEDGED,
+        evidence={
+            "message_id": "m-provenance", "quote": "SHOULD NEVER BE SELECTED", "confidence": "high",
+            "reclassified": True, "legacy_reconciliation": True,
+        },
+    )
+    reconciled.occurred_at = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+    db.commit()
+
+    company.deletion_last_response_message_id = "m-provenance"
+    company.deletion_status = DeletionStatus.UNKNOWN_RESPONSE
+    company.deletion_evidence = {"type": "gmail_reply", "quote": "x", "confidence": "low"}
+    db.commit()
+
+    found = _find_legacy_acknowledgment_event(db, company)
+    assert found is not None
+    assert found.id == genuine.id
+    assert found.evidence["quote"] == MALK_ACKNOWLEDGMENT_TEXT[:200]
+
+    # End-to-end: the reconciliation itself must be driven by the
+    # genuine text, never the reconciliation-generated one.
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+    assert changed is True
+    assert "SHOULD NEVER BE SELECTED" not in str(company.deletion_evidence)
+
+
+# --- Deterministic ordering: if multiple genuine eligible events somehow
+# exist for the same message_id, the EARLIEST one wins - occurred_at
+# ascending, then id ascending as a stable tie-breaker. ---
+
+def test_legacy_finder_picks_earliest_genuine_event_deterministically(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    earlier = record_event(
+        db, company.id, EventType.COMPANY_ACKNOWLEDGED,
+        evidence={"message_id": "m-dup", "quote": "EARLIEST GENUINE TEXT", "confidence": "low"},
+    )
+    earlier.occurred_at = datetime.datetime.utcnow() - datetime.timedelta(days=10)
+    db.commit()
+    later = record_event(
+        db, company.id, EventType.COMPANY_ACKNOWLEDGED,
+        evidence={"message_id": "m-dup", "quote": "LATER GENUINE TEXT", "confidence": "low"},
+    )
+    later.occurred_at = datetime.datetime.utcnow() - datetime.timedelta(days=2)
+    db.commit()
+
+    company.deletion_last_response_message_id = "m-dup"
+    company.deletion_status = DeletionStatus.UNKNOWN_RESPONSE
+    company.deletion_evidence = {"type": "gmail_reply", "quote": "x", "confidence": "low"}
+    db.commit()
+
+    found = _find_legacy_acknowledgment_event(db, company)
+    assert found is not None
+    assert found.id == earlier.id
+    assert found.evidence["quote"] == "EARLIEST GENUINE TEXT"
+
+
+def test_legacy_finder_breaks_occurred_at_tie_by_id(db):
+    """Two genuine events sharing the exact same occurred_at (possible
+    with coarse timestamp precision) must still resolve deterministically
+    - lower id (inserted first) wins, never database/query-order luck."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    same_time = datetime.datetime.utcnow() - datetime.timedelta(days=3)
+    first = record_event(
+        db, company.id, EventType.COMPANY_ACKNOWLEDGED,
+        evidence={"message_id": "m-tie", "quote": "FIRST BY ID", "confidence": "low"},
+    )
+    first.occurred_at = same_time
+    db.commit()
+    second = record_event(
+        db, company.id, EventType.COMPANY_ACKNOWLEDGED,
+        evidence={"message_id": "m-tie", "quote": "SECOND BY ID", "confidence": "low"},
+    )
+    second.occurred_at = same_time
+    db.commit()
+    assert first.id < second.id
+
+    company.deletion_last_response_message_id = "m-tie"
+    company.deletion_status = DeletionStatus.UNKNOWN_RESPONSE
+    company.deletion_evidence = {"type": "gmail_reply", "quote": "x", "confidence": "low"}
+    db.commit()
+
+    found = _find_legacy_acknowledgment_event(db, company)
+    assert found is not None
+    assert found.id == first.id

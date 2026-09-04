@@ -45,7 +45,7 @@ from sqlalchemy.orm import Session
 from app import chase_engine, config, google_oauth, mail
 from app.deletion_constants import DeletionStatus, EventType
 from app.deletion_events import record_event
-from app.models import Company, MailMessage
+from app.models import Company, DeletionEvent, MailMessage
 from app.response_classify import ResponseClassifier
 
 # Diagnostic-only logging for tracing exactly where a real reply gets lost
@@ -417,13 +417,84 @@ def get_companies_with_stale_unknown_response(db: Session, limit: int | None = N
     )
 
 
+def _apply_reclassification(
+    db: Session, company: Company, classification, body_text: str, occurred_at: datetime.datetime,
+    message_id: str, legacy: bool,
+) -> None:
+    """Shared write path for both reconciliation sources (a current
+    MailMessage row, or a legacy pre-mailbox DeletionEvent) - identical
+    status/evidence/audit/chase-scheduling treatment either way, so the
+    two sources can never quietly diverge in behavior. Caller has already
+    confirmed classification.status != UNKNOWN_RESPONSE."""
+    now = datetime.datetime.utcnow()
+    company.deletion_status = classification.status
+    evidence = {
+        "type": "gmail_reply",
+        "quote": classification.quote,
+        "confidence": classification.confidence,
+        "classified_at": now.isoformat(),
+        # Transparent provenance: this came from re-reading ALREADY-stored
+        # evidence with an improved classifier, never a fresh Gmail read -
+        # obvious, later, that Baker's Dozen corrected its own earlier
+        # interpretation.
+        "reclassified": True,
+    }
+    if legacy:
+        evidence["legacy_reconciliation"] = True
+        evidence["source_message_id"] = message_id
+    company.deletion_evidence = evidence
+    if classification.status == DeletionStatus.COMPLETED:
+        company.deletion_completed_at = now
+
+    event_evidence = {
+        "quote": classification.quote,
+        "confidence": classification.confidence,
+        "message_id": message_id,
+        "reclassified": True,
+    }
+    if legacy:
+        event_evidence["legacy_reconciliation"] = True
+        event_evidence["source_message_id"] = message_id
+    record_event(db, company.id, _EVENT_TYPE_FOR_STATUS.get(classification.status, EventType.COMPANY_ACKNOWLEDGED), evidence=event_evidence)
+
+    # Anchored to the REAL historical occurred_at, not "now" - a
+    # classifier mistake Baker's Dozen itself made must never hand a
+    # company an extra 24 hours just because the correction happened
+    # late. If the real reply was, say, 3 days ago, next_followup_at
+    # lands 3 days in the past - immediately overdue, so the very next
+    # worker tick's normal get_companies_due_for_followup/send_followup
+    # path picks it up and sends exactly ONE catch-up follow-up (never
+    # one per missed day: the due-check only ever asks "is
+    # next_followup_at <= now", not "how many days overdue"). That send
+    # then reschedules next_followup_at from its OWN real send time, same
+    # as any other follow-up - so cadence resumes at +24h from the actual
+    # catch-up send, never from this reconciliation moment. If the reply
+    # was recent (< 24h old), this schedules a normal future window
+    # instead - the same formula handles both cases.
+    chase_engine.on_reply_classified(company, classification.status, body_text, occurred_at)
+
+
 def reclassify_stale_unknown_response(db: Session, company: Company, classifier: ResponseClassifier) -> bool:
-    """Re-runs the CURRENT classifier against the already-stored MailMessage
-    for this company's last-processed reply. Returns True only if the
-    status actually changed to something other than UNKNOWN_RESPONSE (a
-    genuine improvement) - False (and no changes made at all) if no
-    stored message is found, or the classifier still can't confidently
+    """Re-runs the CURRENT classifier against already-stored evidence for
+    this company's last-processed reply - preferring the current
+    MailMessage-based path, falling back to a legacy pre-mailbox
+    DeletionEvent only when no MailMessage exists at all (see
+    _find_legacy_acknowledgment_event's docstring for exactly why that
+    fallback is safe and how narrowly it's scoped). Returns True only if
+    the status actually changed to something other than UNKNOWN_RESPONSE
+    (a genuine improvement) - False (and no changes made at all) if
+    nothing usable is found, or the classifier still can't confidently
     place it."""
+    # Self-contained idempotency guard - NOT just relied on via the batch
+    # query's filter (get_companies_with_stale_unknown_response), since
+    # this function is called directly elsewhere (tests, and potentially
+    # future callers). Once reclassified, the event this looks up for the
+    # legacy path can otherwise still "match" (IN_PROGRESS/SUBMITTED and
+    # UNKNOWN_RESPONSE all record under the SAME EventType.COMPANY_ACKNOWLEDGED
+    # - see _EVENT_TYPE_FOR_STATUS), so this check must come first, not be
+    # inferred from whatever the lookups below happen to find.
+    if company.deletion_status != DeletionStatus.UNKNOWN_RESPONSE:
+        return False
     message_row = (
         db.query(MailMessage)
         .filter(
@@ -433,60 +504,123 @@ def reclassify_stale_unknown_response(db: Session, company: Company, classifier:
         )
         .one_or_none()
     )
-    if message_row is None:
+    if message_row is not None:
+        classification = classifier.classify(message_row.body_excerpt)
+        if classification.status == DeletionStatus.UNKNOWN_RESPONSE:
+            return False  # no improvement (yet) - leave everything untouched
+
+        # Keep the mailbox letter's own understanding in sync with the
+        # correction, so "Baker's Dozen understands this as" never
+        # disagrees with the company's current status for the same message.
+        message_row.classification_status = classification.status
+        message_row.classification_confidence = classification.confidence
+        message_row.classification_quote = classification.quote
+
+        _apply_reclassification(
+            db, company, classification, message_row.body_excerpt, message_row.occurred_at,
+            message_row.gmail_message_id, legacy=False,
+        )
+        db.commit()
+        return True
+
+    # No MailMessage row at all - this case predates the mailbox feature's
+    # persistence (see _find_legacy_acknowledgment_event). NEVER fabricate
+    # one just to satisfy the current schema: the absence is historically
+    # accurate, and a fabricated row would misrepresent what the tracker
+    # actually captured at the time.
+    legacy_event = _find_legacy_acknowledgment_event(db, company)
+    if legacy_event is None:
         return False
 
-    classification = classifier.classify(message_row.body_excerpt)
+    quote = (legacy_event.evidence or {}).get("quote", "")
+    classification = classifier.classify(quote)
     if classification.status == DeletionStatus.UNKNOWN_RESPONSE:
-        return False  # no improvement (yet) - leave everything untouched
+        return False  # still genuinely unclear even under the current classifier - leave untouched
 
-    now = datetime.datetime.utcnow()
-    company.deletion_status = classification.status
-    company.deletion_evidence = {
-        "type": "gmail_reply",
-        "quote": classification.quote,
-        "confidence": classification.confidence,
-        "classified_at": now.isoformat(),
-        # Transparent provenance: this came from re-reading ALREADY-stored
-        # evidence with an improved classifier, never a fresh Gmail read.
-        "reclassified": True,
-    }
-    if classification.status == DeletionStatus.COMPLETED:
-        company.deletion_completed_at = now
-
-    # Keep the mailbox letter's own understanding in sync with the
-    # correction, so "Baker's Dozen understands this as" never disagrees
-    # with the company's current status for the same message.
-    message_row.classification_status = classification.status
-    message_row.classification_confidence = classification.confidence
-    message_row.classification_quote = classification.quote
-
-    record_event(
-        db, company.id,
-        _EVENT_TYPE_FOR_STATUS.get(classification.status, EventType.COMPANY_ACKNOWLEDGED),
-        evidence={
-            "quote": classification.quote,
-            "confidence": classification.confidence,
-            "message_id": message_row.gmail_message_id,
-            "reclassified": True,
-        },
+    _apply_reclassification(
+        db, company, classification, quote, legacy_event.occurred_at,
+        company.deletion_last_response_message_id, legacy=True,
     )
-    # Anchored to the message's REAL occurred_at, not "now" - a classifier
-    # mistake Baker's Dozen itself made must never hand a company an extra
-    # 24 hours just because the correction happened late. If the real
-    # reply was, say, 3 days ago, next_followup_at lands 3 days in the
-    # past - immediately overdue, so the very next worker tick's normal
-    # get_companies_due_for_followup/send_followup path picks it up and
-    # sends exactly ONE catch-up follow-up (never one per missed day: the
-    # due-check only ever asks "is next_followup_at <= now", not "how many
-    # days overdue"). That send then reschedules next_followup_at from its
-    # OWN real send time, same as any other follow-up - so cadence resumes
-    # at +24h from the actual catch-up send, never from this reconciliation
-    # moment. If the reply was recent (< 24h old), this schedules a normal
-    # future window instead - the same formula handles both cases.
-    chase_engine.on_reply_classified(company, classification.status, message_row.body_excerpt, message_row.occurred_at)
     db.commit()
     return True
+
+
+# --- Legacy fallback: pre-mailbox-persistence UNKNOWN_RESPONSE cases ---
+#
+# Before the mailbox feature added MailMessage rows, a classified reply
+# left evidence in exactly two places: Company.deletion_evidence (the
+# CURRENT/latest evidence only, overwritten on every new classification)
+# and the append-only DeletionEvent audit trail (every classification
+# ever recorded, including this one, never overwritten). A genuinely real
+# case (a live MALK Organics reply) is stuck as UNKNOWN_RESPONSE from
+# that earlier era - reclassify_stale_unknown_response's MailMessage
+# lookup can never find it, because there IS no MailMessage row for it
+# and never was. That absence is historically accurate, not a bug to
+# paper over by fabricating one - so this fallback reads ONLY the
+# DeletionEvent audit trail that deletion_response_tracker.py itself
+# already wrote at classification time, never anything new.
+
+# The exact set of event types _EVENT_TYPE_FOR_STATUS can ever produce
+# for an inbound company-reply classification (see that dict above) -
+# anything else (EMAIL_SENT, USER_CONFIRMED, EXECUTION_STARTED/
+# EXECUTION_INTERRUPTED, FOLLOWUP_SENT, MAIL_REPLY_SENT,
+# USER_ATTESTED_ACTION_COMPLETED, RESPONSE_CHECK_FAILED, FAILED, RETRY,
+# THREAD_ASSOCIATED, RESEARCH_*, ...) is never a legacy-reconciliation
+# candidate, no matter what its evidence dict happens to contain.
+_LEGACY_INBOUND_CLASSIFICATION_EVENT_TYPES = set(_EVENT_TYPE_FOR_STATUS.values())
+
+
+def _find_legacy_acknowledgment_event(db: Session, company: Company) -> DeletionEvent | None:
+    """Finds the ONE historical DeletionEvent that classified THIS exact
+    message, from before MailMessage persistence existed - never a guess,
+    never simply "the latest event for this company" (which could be
+    anything - a send, an attestation, an unrelated later classification
+    of a DIFFERENT message). Requires an exact evidence.message_id match
+    against the message currently stuck as UNKNOWN_RESPONSE, a safe
+    candidate event_type (see _LEGACY_INBOUND_CLASSIFICATION_EVENT_TYPES),
+    and a non-empty quote (nothing to classify without one).
+
+    Critically, an event this SAME reconciliation mechanism already
+    produced (evidence.reclassified or evidence.legacy_reconciliation) is
+    NEVER eligible as a source - a reconciliation-generated audit event
+    must never become the historical basis for another reconciliation.
+    The top-level UNKNOWN_RESPONSE status guard in
+    reclassify_stale_unknown_response already prevents this in the normal
+    case (once reclassified, the company is no longer UNKNOWN_RESPONSE),
+    but this exclusion is enforced here too, independently, at the
+    evidence-selection layer - so this function stays safe to call even
+    if that guard were ever bypassed or this function reused elsewhere.
+
+    If more than one genuine (non-reconciliation) event still qualifies
+    for the same message_id - shouldn't normally happen, since
+    check_company_response records exactly one classification event per
+    message, but the real world is the real world - the EARLIEST one
+    wins: occurred_at ascending, then id ascending as a stable tie-
+    breaker for two events sharing a timestamp. This is the historical
+    record of what the company ACTUALLY said first, never a later
+    duplicate/retry."""
+    target_message_id = company.deletion_last_response_message_id
+    if not target_message_id:
+        return None
+    candidates = (
+        db.query(DeletionEvent)
+        .filter(
+            DeletionEvent.company_id == company.id,
+            DeletionEvent.event_type.in_(_LEGACY_INBOUND_CLASSIFICATION_EVENT_TYPES),
+        )
+        .order_by(DeletionEvent.occurred_at.asc(), DeletionEvent.id.asc())
+        .all()
+    )
+    for event in candidates:
+        evidence = event.evidence or {}
+        if evidence.get("message_id") != target_message_id:
+            continue
+        if not (evidence.get("quote") or "").strip():
+            continue
+        if evidence.get("reclassified") or evidence.get("legacy_reconciliation"):
+            continue
+        return event
+    return None
 
 
 def process_stale_unknown_responses(db: Session, classifier: ResponseClassifier, limit: int | None = None) -> int:
