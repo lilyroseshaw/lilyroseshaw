@@ -20,7 +20,7 @@ from app import chase_engine, config, google_oauth
 from app.db import get_session
 from app.deletion_research import DeletionResearchProvider, build_default_provider
 from app.deletion_resolver import process_pending
-from app.deletion_response_tracker import process_response_checks
+from app.deletion_response_tracker import process_response_checks, process_stale_unknown_responses
 from app.response_classify import ResponseClassifier, build_default_classifier
 
 # Explicit handler/level so per-tick activity (recipes researched, threads
@@ -63,6 +63,18 @@ def _process_response_checks(classifier: ResponseClassifier) -> int:
         db.close()
 
 
+def _process_stale_reclassification(classifier: ResponseClassifier) -> int:
+    """No Gmail access required at all - pure local reconciliation against
+    already-stored evidence (see deletion_response_tracker's stale-
+    UNKNOWN_RESPONSE section). Always runs, regardless of which Gmail
+    scopes are granted, since it never talks to Gmail."""
+    db = get_session()
+    try:
+        return process_stale_unknown_responses(db, classifier)
+    finally:
+        db.close()
+
+
 def _process_followups() -> int:
     """No-op unless BOTH gmail.readonly (to read the thread) and
     gmail.send (to actually reply) have been granted - the 24-hour chase
@@ -80,24 +92,27 @@ def _process_followups() -> int:
         db.close()
 
 
-def _run_one_tick(provider: DeletionResearchProvider, classifier: ResponseClassifier) -> tuple[int, int, int]:
+def _run_one_tick(provider: DeletionResearchProvider, classifier: ResponseClassifier) -> tuple[int, int, int, int]:
     recipes_processed = _process_recipe_research(provider)
     responses_checked = _process_response_checks(classifier)
+    reclassified = _process_stale_reclassification(classifier)
     followups_sent = _process_followups()
-    return recipes_processed, responses_checked, followups_sent
+    return recipes_processed, responses_checked, reclassified, followups_sent
 
 
 async def _run_forever(provider: DeletionResearchProvider, classifier: ResponseClassifier) -> None:
     while True:
         await asyncio.sleep(config.DELETION_QUEUE_INTERVAL_SECONDS)
         try:
-            recipes_processed, responses_checked, followups_sent = await asyncio.to_thread(
+            recipes_processed, responses_checked, reclassified, followups_sent = await asyncio.to_thread(
                 _run_one_tick, provider, classifier
             )
             if recipes_processed:
                 logger.info("deletion enrichment tick processed %d recipe(s)", recipes_processed)
             if responses_checked:
                 logger.info("response-tracking tick checked %d thread(s)", responses_checked)
+            if reclassified:
+                logger.info("reclassification tick fixed %d stale UNKNOWN_RESPONSE case(s)", reclassified)
             if followups_sent:
                 logger.info("chase tick sent %d follow-up(s)", followups_sent)
         except Exception:

@@ -45,7 +45,7 @@ from sqlalchemy.orm import Session
 from app import chase_engine, config, google_oauth, mail
 from app.deletion_constants import DeletionStatus, EventType
 from app.deletion_events import record_event
-from app.models import Company
+from app.models import Company, MailMessage
 from app.response_classify import ResponseClassifier
 
 # Diagnostic-only logging for tracing exactly where a real reply gets lost
@@ -372,3 +372,127 @@ def process_response_checks(
     for company in companies:
         check_company_response(db, company, creds, gmail_address, classifier)
     return len(companies)
+
+
+# --- Stale UNKNOWN_RESPONSE reclassification ---
+#
+# A real bug: a company reply already stored and marked "processed" (its
+# gmail_message_id is company.deletion_last_response_message_id) can have
+# been classified UNKNOWN_RESPONSE only because response_classify.py's
+# patterns didn't yet cover its exact phrasing (e.g. "we have received
+# your EMAIL" instead of "...your request", or "someone from our team
+# will get back to you" instead of "we will get back to you" - both real,
+# now-fixed gaps found via a live MALK Organics reply). Once the
+# classifier improves, that company is stuck: check_company_response only
+# ever re-examines messages NEWER than the stored cursor, so a message
+# already marked processed is never looked at again, no matter how much
+# better the classifier gets.
+#
+# The fix reclassifies using ONLY what's already stored - the inbound
+# MailMessage.body_excerpt captured at the time (already the same
+# quote-stripped text the classifier originally saw, see
+# mail.record_inbound_mail_message) - never a new Gmail fetch, never a
+# new MailMessage row, and never a change to deletion_last_response_message_id
+# (the message stays "processed"; nothing is ever reprocessed as if it
+# just arrived). A no-op (still UNKNOWN_RESPONSE) touches nothing at all.
+
+def get_companies_with_stale_unknown_response(db: Session, limit: int | None = None) -> list[Company]:
+    """Companies stuck on a stored UNKNOWN_RESPONSE classification for
+    their last-processed reply - candidates for safe reclassification if
+    the classifier's patterns have since improved. Every OTHER status
+    (including a wrong one a human would need to correct by hand) is left
+    completely alone - only genuine classifier uncertainty is ever
+    silently re-derived."""
+    limit = limit or config.RESPONSE_CHECK_BATCH_SIZE
+    return (
+        db.query(Company)
+        .filter(
+            Company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE,
+            Company.deletion_thread_id.isnot(None),
+            Company.deletion_last_response_message_id.isnot(None),
+        )
+        .order_by(Company.id)
+        .limit(limit)
+        .all()
+    )
+
+
+def reclassify_stale_unknown_response(db: Session, company: Company, classifier: ResponseClassifier) -> bool:
+    """Re-runs the CURRENT classifier against the already-stored MailMessage
+    for this company's last-processed reply. Returns True only if the
+    status actually changed to something other than UNKNOWN_RESPONSE (a
+    genuine improvement) - False (and no changes made at all) if no
+    stored message is found, or the classifier still can't confidently
+    place it."""
+    message_row = (
+        db.query(MailMessage)
+        .filter(
+            MailMessage.company_id == company.id,
+            MailMessage.gmail_message_id == company.deletion_last_response_message_id,
+            MailMessage.direction == "inbound",
+        )
+        .one_or_none()
+    )
+    if message_row is None:
+        return False
+
+    classification = classifier.classify(message_row.body_excerpt)
+    if classification.status == DeletionStatus.UNKNOWN_RESPONSE:
+        return False  # no improvement (yet) - leave everything untouched
+
+    now = datetime.datetime.utcnow()
+    company.deletion_status = classification.status
+    company.deletion_evidence = {
+        "type": "gmail_reply",
+        "quote": classification.quote,
+        "confidence": classification.confidence,
+        "classified_at": now.isoformat(),
+        # Transparent provenance: this came from re-reading ALREADY-stored
+        # evidence with an improved classifier, never a fresh Gmail read.
+        "reclassified": True,
+    }
+    if classification.status == DeletionStatus.COMPLETED:
+        company.deletion_completed_at = now
+
+    # Keep the mailbox letter's own understanding in sync with the
+    # correction, so "Baker's Dozen understands this as" never disagrees
+    # with the company's current status for the same message.
+    message_row.classification_status = classification.status
+    message_row.classification_confidence = classification.confidence
+    message_row.classification_quote = classification.quote
+
+    record_event(
+        db, company.id,
+        _EVENT_TYPE_FOR_STATUS.get(classification.status, EventType.COMPANY_ACKNOWLEDGED),
+        evidence={
+            "quote": classification.quote,
+            "confidence": classification.confidence,
+            "message_id": message_row.gmail_message_id,
+            "reclassified": True,
+        },
+    )
+    # Anchored to the message's REAL occurred_at, not "now" - a classifier
+    # mistake Baker's Dozen itself made must never hand a company an extra
+    # 24 hours just because the correction happened late. If the real
+    # reply was, say, 3 days ago, next_followup_at lands 3 days in the
+    # past - immediately overdue, so the very next worker tick's normal
+    # get_companies_due_for_followup/send_followup path picks it up and
+    # sends exactly ONE catch-up follow-up (never one per missed day: the
+    # due-check only ever asks "is next_followup_at <= now", not "how many
+    # days overdue"). That send then reschedules next_followup_at from its
+    # OWN real send time, same as any other follow-up - so cadence resumes
+    # at +24h from the actual catch-up send, never from this reconciliation
+    # moment. If the reply was recent (< 24h old), this schedules a normal
+    # future window instead - the same formula handles both cases.
+    chase_engine.on_reply_classified(company, classification.status, message_row.body_excerpt, message_row.occurred_at)
+    db.commit()
+    return True
+
+
+def process_stale_unknown_responses(db: Session, classifier: ResponseClassifier, limit: int | None = None) -> int:
+    """Batch entry point for the background worker - pure local
+    reconciliation using already-stored evidence only, no Gmail access at
+    all. Returns how many companies were actually reclassified (never
+    counts a recheck that changed nothing)."""
+    companies = get_companies_with_stale_unknown_response(db, limit)
+    return sum(1 for company in companies if reclassify_stale_unknown_response(db, company, classifier))

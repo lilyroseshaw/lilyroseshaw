@@ -7,17 +7,26 @@ from googleapiclient.errors import HttpError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app import config
+from app import chase_engine, config, mail
 from app.db import Base
-from app.deletion_constants import DeletionStatus, EventType
+from app.deletion_constants import DeletionStatus, EventType, WaitingOn
 from app.deletion_response_tracker import (
     check_company_response,
     extract_body_text,
     get_companies_due_for_check,
+    get_companies_with_stale_unknown_response,
     process_response_checks,
+    process_stale_unknown_responses,
+    reclassify_stale_unknown_response,
 )
-from app.models import Company, DeletionEvent
-from app.response_classify import ResponseClassifier
+from app.models import Company, DeletionEvent, MailMessage
+from app.response_classify import ResponseClassification, ResponseClassifier
+
+MALK_ACKNOWLEDGMENT_TEXT = (
+    "Hello Lily, Thanks for reaching out to MALK Organics! We have received "
+    "your email and someone from our team will get back to you as soon as "
+    "possible. Thank you!"
+)
 
 
 @pytest.fixture()
@@ -388,3 +397,207 @@ def test_process_response_checks_processes_multiple_due_companies(db):
     with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
         count = process_response_checks(db, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
     assert count == 2
+
+
+# --- Regression: real MALK Organics reply, fresh processing ---
+# (see response_classify.py's IN_PROGRESS_PATTERNS - "received your
+# request" and "we will get back to you" were too narrow to match this
+# real, common helpdesk-auto-reply phrasing)
+
+def test_malk_style_acknowledgment_classifies_in_progress_on_first_processing(db):
+    """A brand-new MALK-style acknowledgment must deterministically
+    classify as IN_PROGRESS (never UNKNOWN_RESPONSE) the first time it's
+    ever processed - proves the classifier gap itself is fixed, not just
+    worked around by reconciliation."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    reply = _msg("m2", MALK_ACKNOWLEDGMENT_TEXT, "hello@malkorganics.com", 2000)
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+    assert company.deletion_status == DeletionStatus.IN_PROGRESS
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert company.next_followup_at is not None  # chase is active
+
+
+# --- Regression: a previously-processed MALK-style reply stuck as
+# UNKNOWN_RESPONSE (classified by the OLD, narrower patterns) must be
+# safely reclassifiable using ONLY the already-stored evidence - no new
+# Gmail fetch, no duplicate MailMessage/evidence, no resend. ---
+
+def _epoch_ms(dt: datetime.datetime) -> int:
+    # Timezone-safe: treats the naive datetime as already-UTC, matching
+    # mail._occurred_at's own datetime.utcfromtimestamp reconstruction -
+    # avoids .timestamp()'s local-timezone interpretation of naive datetimes.
+    return int((dt - datetime.datetime(1970, 1, 1)).total_seconds() * 1000)
+
+
+def _seed_stale_unknown_response(db, company, gmail_message_id="m2", text=MALK_ACKNOWLEDGMENT_TEXT, occurred_at=None):
+    """Reproduces exactly the stuck state a real pre-fix MALK case is in:
+    an inbound MailMessage already stored (classified UNKNOWN_RESPONSE
+    back when the old patterns were in effect), the company's dedup
+    cursor already pointing at it, and deletion_status/evidence already
+    set to the old, wrong classification - all WITHOUT going through
+    check_company_response, so no Gmail call is ever made to set this up.
+    occurred_at controls the message's REAL historical timestamp (default:
+    a fixed point far in the past, like a genuinely old stuck case)."""
+    occurred_at = occurred_at or datetime.datetime(2024, 1, 1, 0, 0, 0)
+    old_classification = ResponseClassification(
+        status=DeletionStatus.UNKNOWN_RESPONSE, confidence="low", quote=text[:200], reasons=["no known pattern matched"],
+    )
+    message = _msg(gmail_message_id, text, "hello@malkorganics.com", _epoch_ms(occurred_at))
+    row = mail.record_inbound_mail_message(db, company, message, text, old_classification)
+    company.deletion_last_response_message_id = gmail_message_id
+    company.deletion_status = DeletionStatus.UNKNOWN_RESPONSE
+    company.deletion_evidence = {
+        "type": "gmail_reply", "quote": text[:200], "confidence": "low",
+        "classified_at": datetime.datetime.utcnow().isoformat(),
+    }
+    db.commit()
+    return row
+
+
+def test_stale_unknown_response_is_safely_reclassified(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    message_row = _seed_stale_unknown_response(db, company)
+    existing_message_count = db.query(MailMessage).filter(MailMessage.company_id == company.id).count()
+    existing_event_count_before = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count()
+
+    with patch("app.google_oauth.fetch_thread_messages") as mock_fetch:
+        changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is True
+    mock_fetch.assert_not_called()  # never re-fetches Gmail - already-stored evidence only
+
+    assert company.deletion_status == DeletionStatus.IN_PROGRESS
+    assert company.deletion_evidence["reclassified"] is True
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert company.next_followup_at is not None  # chase now active, scheduled fresh
+
+    # Never reprocessed as if new, never duplicated:
+    assert company.deletion_last_response_message_id == message_row.gmail_message_id
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == existing_message_count
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == existing_event_count_before + 1
+
+    # The mailbox letter's own understanding is corrected too.
+    db.refresh(message_row)
+    assert message_row.classification_status == DeletionStatus.IN_PROGRESS
+
+
+# --- Anchoring reclassification's chase schedule to the REAL historical
+# reply timestamp, not the moment of reconciliation - a classifier mistake
+# Baker's Dozen made must never hand a company an extra 24 hours. ---
+
+def test_stale_reclassification_of_old_reply_becomes_overdue(db):
+    """A reply from 3 days ago, only just reclassified today, must be
+    scheduled from ITS real timestamp - landing in the past (overdue),
+    not 24h from right now."""
+    reply_time = datetime.datetime.utcnow() - datetime.timedelta(days=3)
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_unknown_response(db, company, occurred_at=reply_time)
+
+    reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    expected = reply_time + datetime.timedelta(hours=config.FOLLOWUP_INTERVAL_HOURS)
+    assert abs((company.next_followup_at - expected).total_seconds()) < 2
+    assert company.next_followup_at < datetime.datetime.utcnow()  # already overdue
+    assert company in chase_engine.get_companies_due_for_followup(db)
+
+
+def test_stale_reclassification_never_sends_multiple_catchup_followups(db):
+    """However many days overdue, the worker must send exactly ONE
+    catch-up follow-up, never one per missed day - the due-check only
+    ever asks 'is next_followup_at <= now', it never counts missed
+    windows."""
+    reply_time = datetime.datetime.utcnow() - datetime.timedelta(days=10)  # very overdue
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_unknown_response(db, company, occurred_at=reply_time)
+
+    reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    with patch("app.chase_engine._send_followup_email", return_value={"id": "sent-1", "threadId": "thread123"}) as mock_send:
+        sent_count = chase_engine.process_followups(db, creds=MagicMock(), gmail_address="me@gmail.com")
+
+    assert sent_count == 1
+    assert mock_send.call_count == 1
+    assert company.followup_attempt == 1
+
+
+def test_stale_reclassification_catchup_send_resumes_normal_24h_cadence(db):
+    """After the single overdue catch-up follow-up actually sends, the
+    NEXT window is +24h from that real send time - never backdated, never
+    still anchored to the original stale reply."""
+    reply_time = datetime.datetime.utcnow() - datetime.timedelta(days=5)
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_unknown_response(db, company, occurred_at=reply_time)
+    reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    send_started = datetime.datetime.utcnow()
+    with patch("app.chase_engine._send_followup_email", return_value={"id": "sent-1", "threadId": "thread123"}):
+        chase_engine.process_followups(db, creds=MagicMock(), gmail_address="me@gmail.com")
+    send_finished = datetime.datetime.utcnow()
+
+    expected_min = send_started + datetime.timedelta(hours=config.FOLLOWUP_INTERVAL_HOURS)
+    expected_max = send_finished + datetime.timedelta(hours=config.FOLLOWUP_INTERVAL_HOURS)
+    assert expected_min <= company.next_followup_at <= expected_max
+    # And it's no longer due - cadence has genuinely resumed, not repeated.
+    assert company not in chase_engine.get_companies_due_for_followup(db)
+
+
+def test_stale_reclassification_of_recent_reply_schedules_normally(db):
+    """A reply that's only 2 hours old (reclassified same-day) is NOT yet
+    overdue - it schedules a normal future window from its own real
+    timestamp, exactly as if it had just been correctly classified live."""
+    reply_time = datetime.datetime.utcnow() - datetime.timedelta(hours=2)
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_unknown_response(db, company, occurred_at=reply_time)
+
+    reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    expected = reply_time + datetime.timedelta(hours=config.FOLLOWUP_INTERVAL_HOURS)
+    assert abs((company.next_followup_at - expected).total_seconds()) < 2
+    assert company.next_followup_at > datetime.datetime.utcnow()  # not due yet
+    assert company not in chase_engine.get_companies_due_for_followup(db)
+
+
+def test_reclassification_is_noop_when_classifier_still_uncertain(db):
+    """A message that genuinely still doesn't match anything must NOT be
+    touched - no fabricated status, no wasted event, no chase state
+    invented off nothing."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_unknown_response(db, company, text="Thanks for your email!")
+    events_before = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count()
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE
+    assert company.waiting_on is None
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == events_before
+
+
+def test_reclassification_ignores_companies_with_other_statuses(db):
+    """Only genuinely-stuck UNKNOWN_RESPONSE cases are candidates - a
+    company sitting in any other status (even one a human might disagree
+    with) is never silently re-derived."""
+    _company(db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.IN_PROGRESS, domain="already-fine.com")
+    due = get_companies_with_stale_unknown_response(db)
+    assert due == []
+
+
+def test_get_companies_with_stale_unknown_response_finds_the_stuck_case(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_unknown_response(db, company)
+    due = get_companies_with_stale_unknown_response(db)
+    assert due == [company]
+
+
+def test_process_stale_unknown_responses_batch_entry_point(db):
+    c1 = _company(db, deletion_method="EMAIL_REQUEST", domain="fixable.com")
+    _seed_stale_unknown_response(db, c1, gmail_message_id="fixable-1")
+    c2 = _company(db, deletion_method="EMAIL_REQUEST", domain="still-unclear.com")
+    _seed_stale_unknown_response(db, c2, gmail_message_id="unclear-1", text="Thanks!")
+
+    count = process_stale_unknown_responses(db, ResponseClassifier())
+
+    assert count == 1
+    assert c1.deletion_status == DeletionStatus.IN_PROGRESS
+    assert c2.deletion_status == DeletionStatus.UNKNOWN_RESPONSE  # untouched, still genuinely unclear

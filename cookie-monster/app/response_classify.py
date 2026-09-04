@@ -59,13 +59,22 @@ MORE_INFO_REQUIRED_PATTERNS = [
 ]
 
 IN_PROGRESS_PATTERNS = [
-    r"(we have |we'?ve )?received your request",
+    # Broadened from "received your request" - real helpdesk auto-replies
+    # routinely say "your email"/"your message" instead of "your request"
+    # (e.g. MALK Organics: "We have received your email...") - still a
+    # purely generic acknowledgment either way, never COMPLETED/REJECTED/
+    # etc., which are all checked earlier in _PATTERN_ORDER and win first.
+    r"(we have |we'?ve )?received your (request|email|message)",
     r"(is|are) being processed",
     r"we are (currently )?(reviewing|processing|working on)",
     r"case (number|#|id) ?[:#]?\s*\w+",
     r"ticket (number|#|id) ?[:#]?\s*\w+",
     r"support request .{0,20}(created|opened|received)",
-    r"we will (get back to you|respond|follow up)",
+    # Broadened from "we will ..." - "someone from our team"/"our team"
+    # will respond is the same generic acknowledgment, just phrased with a
+    # different subject (e.g. MALK Organics: "someone from our team will
+    # get back to you").
+    r"(we|someone( from our team)?|our team) will (get back to you|respond|follow up)",
 ]
 
 # Checked in order: more specific/serious signals before generic ones, so a
