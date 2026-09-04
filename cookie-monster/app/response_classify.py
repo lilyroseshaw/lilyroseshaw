@@ -43,6 +43,28 @@ REJECTED_PATTERNS = [
     r"cannot honor (this|your) request",
 ]
 
+# Account closure/deactivation is NOT deletion confirmation - a company
+# saying it closed/deactivated the account "as requested" only confirms
+# the ACCOUNT action, never that the underlying PERSONAL DATA was
+# deleted (some companies retain data after account closure for legal/
+# operational reasons). Deliberately narrow (requires "account" AND a
+# closure verb close together) so this never fires on unrelated text -
+# and deliberately does NOT include generic privacy/security assurance
+# language ("information is protected", "handled securely", "never
+# shared publicly") as a signal of anything: that's boilerplate, not
+# deletion evidence, and is intentionally left unmatched everywhere.
+# Checked AFTER COMPLETED/REJECTED in _PATTERN_ORDER, so an explicit
+# stronger claim (e.g. "account closed and your data deleted") still
+# resolves to COMPLETED first - this category only ever catches the
+# account-only case COMPLETED_PATTERNS deliberately doesn't.
+ACCOUNT_CLOSED_DATA_UNVERIFIED_PATTERNS = [
+    r"deactivat(ed|ing).{0,40}account",
+    r"clos(ed|ing).{0,40}account",
+    r"terminat(ed|ing).{0,40}account",
+    r"cancell?(ed|ing).{0,40}account",
+    r"account.{0,40}(deactivated|closed|terminated|cancell?ed)",
+]
+
 VERIFICATION_NEEDED_PATTERNS = [
     r"verify your identity",
     r"confirm your (email|identity|request)",
@@ -83,6 +105,7 @@ IN_PROGRESS_PATTERNS = [
 _PATTERN_ORDER = [
     (DeletionStatus.COMPLETED, COMPLETED_PATTERNS),
     (DeletionStatus.REJECTED, REJECTED_PATTERNS),
+    (DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED, ACCOUNT_CLOSED_DATA_UNVERIFIED_PATTERNS),
     (DeletionStatus.VERIFICATION_NEEDED, VERIFICATION_NEEDED_PATTERNS),
     (DeletionStatus.MORE_INFO_REQUIRED, MORE_INFO_REQUIRED_PATTERNS),
     (DeletionStatus.IN_PROGRESS, IN_PROGRESS_PATTERNS),
@@ -90,10 +113,11 @@ _PATTERN_ORDER = [
 
 LLM_CLASSIFY_PROMPT = """You are reading ONE email reply from a company, sent in response to a data-deletion request that was already sent to them. Classify it into exactly one of these labels:
 
-SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, COMPLETED, REJECTED, UNKNOWN_RESPONSE
+SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, ACCOUNT_CLOSED_DATA_UNVERIFIED, COMPLETED, REJECTED, UNKNOWN_RESPONSE
 
 Rules:
 - COMPLETED means the company explicitly states the deletion has ALREADY happened - not that they received the request, opened a ticket, or are reviewing it. A generic acknowledgement is IN_PROGRESS, never COMPLETED.
+- ACCOUNT_CLOSED_DATA_UNVERIFIED means the company confirms closing/deactivating the ACCOUNT (e.g. "we've deactivated your account as requested"), but does NOT explicitly confirm the underlying personal DATA/information was deleted. Generic privacy/security assurances ("your information is protected", "handled securely", "never shared publicly") are NOT deletion confirmation and must never upgrade this to COMPLETED - use COMPLETED only if the reply separately, explicitly states the data itself was deleted/removed/erased.
 - REJECTED means the company explicitly declines or says it cannot fulfill the request.
 - VERIFICATION_NEEDED means they're asking the sender to verify identity/email before proceeding.
 - MORE_INFO_REQUIRED means they're asking for additional information (not identity verification).

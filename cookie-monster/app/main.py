@@ -161,6 +161,7 @@ def _status_counts(db) -> dict[str, int]:
 _SENT_OR_LATER_STATUSES = {
     DeletionStatus.SUBMITTED, DeletionStatus.USER_ACTION_REQUIRED, DeletionStatus.IN_PROGRESS,
     DeletionStatus.VERIFICATION_NEEDED, DeletionStatus.MORE_INFO_REQUIRED, DeletionStatus.UNKNOWN_RESPONSE,
+    DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED,
 }
 # "Needs a look" - confirmed, but not yet actionable-ready or already
 # underway. Used both for the dashboard's "Needs action" filter and stage 1.
@@ -222,6 +223,7 @@ _STATUS_BADGES = {
     DeletionStatus.VERIFICATION_NEEDED: ("Needs you", "warning"),
     DeletionStatus.MORE_INFO_REQUIRED: ("Needs you", "warning"),
     DeletionStatus.UNKNOWN_RESPONSE: ("Review reply", "warning"),
+    DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED: ("Account closed - data unverified", "warning"),
     DeletionStatus.COMPLETED: ("Done", "success"),
     DeletionStatus.REJECTED: ("Declined", "danger"),
     DeletionStatus.FAILED: ("Failed", "danger"),
@@ -1106,6 +1108,7 @@ _MAIL_UNDERSTAND_TEMPLATES = {
     DeletionStatus.IN_PROGRESS: "{name} says they're working on it.",
     DeletionStatus.SUBMITTED: "{name} acknowledged your request.",
     DeletionStatus.UNKNOWN_RESPONSE: "We're not sure what they're asking.",
+    DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED: "{name} closed the account, but didn't confirm your data was deleted.",
 }
 
 

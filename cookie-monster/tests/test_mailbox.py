@@ -135,12 +135,23 @@ def test_duplicate_gmail_message_id_never_creates_duplicate_mail(db):
 def test_already_processed_message_produces_no_second_mail_row(db):
     """The existing dedup marker (deletion_last_response_message_id) means
     check_company_response never re-processes a message at all - so a
-    second identical tick never even reaches record_inbound_mail_message."""
+    second identical tick never even reaches record_inbound_mail_message.
+    Seeds a real MailMessage row for "m2" first, matching what the actual
+    pipeline always creates for a message it has genuinely already
+    processed - a cursor set with NO MailMessage row at all is the
+    distinct legacy-recovery signature (see
+    deletion_response_tracker.py's check_company_response), not this."""
     company = _company(db, deletion_last_response_message_id="m2")
+    db.add(MailMessage(
+        company_id=company.id, direction="inbound", gmail_message_id="m2",
+        gmail_thread_id=company.deletion_thread_id, occurred_at=datetime.datetime(2022, 1, 2),
+        from_display="privacy@goopkitchen.com", subject="Re: request", body_excerpt="We received your request.",
+    ))
+    db.commit()
     reply = _msg("m2", "We received your request.", "privacy@goopkitchen.com", 2000)
     with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
         check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
-    assert mail.get_company_mail(db, company.id) == []
+    assert len(mail.get_company_mail(db, company.id)) == 1  # only the seeded row - no second one created
 
 
 # --- unread / read state ---

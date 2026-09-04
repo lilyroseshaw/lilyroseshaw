@@ -73,12 +73,20 @@ class DeletionStatus:
     # cooldown, and the manual "Research deletion method" button still
     # works from here - see deletion_resolver.py.
     NO_METHOD_FOUND = "NO_METHOD_FOUND"
+    # The company confirmed closing/deactivating the ACCOUNT the request
+    # was about, but said nothing that confirms the underlying PERSONAL
+    # DATA was deleted (see response_classify.py's
+    # ACCOUNT_CLOSED_DATA_UNVERIFIED_PATTERNS and its module docstring for
+    # why this must never be conflated with COMPLETED). Not terminal: the
+    # 24h chase keeps going, explicitly asking whether personal data was
+    # deleted and, if retained, what and why - see chase_engine.py.
+    ACCOUNT_CLOSED_DATA_UNVERIFIED = "ACCOUNT_CLOSED_DATA_UNVERIFIED"
 
     ALL = {
         NOT_STARTED, METHOD_LOOKUP, READY, CONFIRMATION_REQUIRED, SUBMITTING,
         SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED,
         USER_ACTION_REQUIRED, COMPLETED, REJECTED, FAILED, UNKNOWN_RESPONSE, UNKNOWN,
-        NO_METHOD_FOUND,
+        NO_METHOD_FOUND, ACCOUNT_CLOSED_DATA_UNVERIFIED,
     }
 
     # Statuses that engine code only ever sets when it has real evidence -
@@ -96,13 +104,19 @@ class DeletionStatus:
     # confused with a real Gmail-send-verified SUBMITTED
     # ({"type": "gmail_send", ...}). Use is_system_verified() below instead
     # of checking status membership alone if that distinction matters to you.
-    SYSTEM_VERIFIED = {SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, REJECTED}
+    SYSTEM_VERIFIED = {
+        SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, REJECTED,
+        ACCOUNT_CLOSED_DATA_UNVERIFIED,
+    }
 
     # Statuses for which a company reply might still arrive - the background
     # response-checker (deletion_response_tracker.py) only polls threads
     # whose company is in one of these. COMPLETED/REJECTED/FAILED are
     # terminal: polling stops once a request reaches one of them.
-    ACTIVELY_MONITORED = {SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, UNKNOWN_RESPONSE}
+    ACTIVELY_MONITORED = {
+        SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, UNKNOWN_RESPONSE,
+        ACCOUNT_CLOSED_DATA_UNVERIFIED,
+    }
 
     # A request in one of these is done, one way or another - nothing more
     # will ever change it. Used to gate actions that only make sense for a
@@ -253,6 +267,11 @@ class EventType:
     # and, when the send was discovered via reconciliation rather than
     # observed directly, {"recovered": true} - see chase_engine.py.
     FOLLOWUP_SENT = "FOLLOWUP_SENT"
+    # The company confirmed the ACCOUNT was closed/deactivated, but said
+    # nothing that confirms the underlying personal DATA was deleted - see
+    # DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED and
+    # response_classify.py's ACCOUNT_CLOSED_DATA_UNVERIFIED_PATTERNS.
+    ACCOUNT_CLOSED_DATA_UNVERIFIED = "ACCOUNT_CLOSED_DATA_UNVERIFIED"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
@@ -260,7 +279,7 @@ class EventType:
         COMPLETION_CONFIRMED, USER_MARKED_COMPLETE, REQUEST_REJECTED, FAILED, RETRY,
         RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED, RESEARCH_DEFERRED,
         EXECUTION_STARTED, EXECUTION_INTERRUPTED, MAIL_REPLY_SENT,
-        FOLLOWUP_SENT,
+        FOLLOWUP_SENT, ACCOUNT_CLOSED_DATA_UNVERIFIED,
     }
 
 

@@ -64,7 +64,9 @@ def derive_waiting_on(classification_status: str, body_text: str) -> str | None:
     not explicitly covered here returns None (not an active chase case)."""
     if classification_status in (DeletionStatus.VERIFICATION_NEEDED, DeletionStatus.MORE_INFO_REQUIRED):
         return WaitingOn.USER
-    if classification_status in (DeletionStatus.IN_PROGRESS, DeletionStatus.SUBMITTED):
+    if classification_status in (
+        DeletionStatus.IN_PROGRESS, DeletionStatus.SUBMITTED, DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED,
+    ):
         return WaitingOn.COMPANY
     if classification_status == DeletionStatus.UNKNOWN_RESPONSE:
         return WaitingOn.USER if _unknown_response_needs_user(body_text) else WaitingOn.COMPANY
@@ -164,6 +166,27 @@ def _followup_template(company: Company, to_email: str, subject: str, attempt: i
     )
     if not subject.lower().startswith("re:"):
         subject = f"Re: {subject}"
+
+    if company.deletion_status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED:
+        # Distinct from the generic tiers below: the open question here is
+        # never "how much longer" - it's "you confirmed the ACCOUNT, but
+        # not the DATA" - so this stays the same regardless of attempt
+        # count, deterministic and specific every time, never treating a
+        # generic security assurance ("protected", "handled securely",
+        # "not shared publicly") as an answer to the actual question.
+        body = (
+            f"Thank you for confirming that the account associated with my data deletion "
+            f"request (sent on {date_str}) has been deactivated/closed.\n\n"
+            "However, my original request was for the deletion of my PERSONAL INFORMATION, "
+            "not only closure of the account - and closing the account does not by itself "
+            "confirm that my personal information was deleted.\n\n"
+            "Could you please confirm whether my personal information has been deleted? If "
+            "any of my information is still being retained, please specify which categories "
+            "of information are being retained, the reason each is being kept, and how long "
+            "it will be retained, if known.\n\n"
+            "Thank you."
+        )
+        return {"to": to_email, "subject": subject, "body": body}
 
     if attempt <= 1:
         body = (

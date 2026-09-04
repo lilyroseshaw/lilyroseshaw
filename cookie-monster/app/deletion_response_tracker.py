@@ -71,6 +71,7 @@ _EVENT_TYPE_FOR_STATUS = {
     DeletionStatus.REJECTED: EventType.REQUEST_REJECTED,
     DeletionStatus.SUBMITTED: EventType.COMPANY_ACKNOWLEDGED,
     DeletionStatus.UNKNOWN_RESPONSE: EventType.COMPANY_ACKNOWLEDGED,
+    DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED: EventType.ACCOUNT_CLOSED_DATA_UNVERIFIED,
 }
 
 
@@ -190,7 +191,21 @@ def _is_own_message(message: dict, gmail_address: str) -> bool:
     return sender_address.lower() == gmail_address.lower()
 
 
-def _select_new_company_messages(messages: list[dict], gmail_address: str, last_processed_id: str | None) -> list[dict]:
+def _select_new_company_messages(
+    messages: list[dict], gmail_address: str, last_processed_id: str | None, include_cursor: bool = False,
+) -> list[dict]:
+    """include_cursor=True treats the message AT last_processed_id itself
+    as unseen too, not just messages strictly after it. Used ONLY for a
+    legacy company whose cursor points at a message from before mailbox
+    persistence existed (zero MailMessage rows) - the ORIGINAL evidence
+    for that exact message may have been produced by a since-fixed bug
+    (a real example: corrupted quote-extraction that captured a fragment
+    of Cookie Monster's OWN outgoing request instead of the company's new
+    words, misclassifying a Goop Kitchen account-closure reply as
+    VERIFICATION_NEEDED). See check_company_response's own call site for
+    exactly when this is set - never once even one MailMessage row
+    exists for the company, at which point modern, MailMessage-backed
+    state always takes precedence."""
     def _timestamp(m: dict) -> int:
         try:
             return int(m.get("internalDate", "0"))
@@ -201,7 +216,8 @@ def _select_new_company_messages(messages: list[dict], gmail_address: str, last_
     if last_processed_id:
         ids = [m["id"] for m in ordered]
         if last_processed_id in ids:
-            ordered = ordered[ids.index(last_processed_id) + 1:]
+            cursor_index = ids.index(last_processed_id)
+            ordered = ordered[cursor_index:] if include_cursor else ordered[cursor_index + 1:]
     return [m for m in ordered if not _is_own_message(m, gmail_address)]
 
 
@@ -295,7 +311,43 @@ def check_company_response(
         "check fetched: company=%s thread=%s total_messages=%d own_messages=%d",
         company.id, company.deletion_thread_id, len(messages), own_count,
     )
-    new_messages = _select_new_company_messages(messages, gmail_address, company.deletion_last_response_message_id)
+    last_processed_id = company.deletion_last_response_message_id
+    # Legacy-cursor recovery: a company whose cursor is already set but has
+    # ZERO MailMessage rows predates mailbox persistence entirely - the
+    # ORIGINAL evidence for the message at that cursor may have been
+    # produced by a since-fixed bug (corrupted quote-extraction, an own-
+    # message-detection miss, ...) and never actually captured the
+    # company's real words. Re-examining that ONE message with today's
+    # extraction/classification is safe exactly because there is no
+    # MailMessage row yet to duplicate or contradict - the very first
+    # MailMessage row this creates is what turns this off for good on
+    # every later check (modern, MailMessage-backed state then always
+    # takes precedence). Never broadens WHICH thread is read - still the
+    # one already-tracked thread, still no cursor reset.
+    # WHY this exact condition, and only this one: the MODERN pipeline
+    # (the loop below, every time) unconditionally creates a MailMessage
+    # row for every message it ever examines - so "a cursor is already
+    # set" (a message WAS classified at some point) together with "zero
+    # MailMessage rows exist for this company" can only ever be true for
+    # a case that predates mailbox persistence entirely. It is not a
+    # guess or a heuristic; it is the one combination the current system
+    # cannot itself produce. Do NOT broaden this to any other condition
+    # (a particular deletion_status, a time window, "looks stuck", etc.)
+    # without equally strong justification - narrowness here is what
+    # keeps this safe to run unattended on every check.
+    original_cursor_id = company.deletion_last_response_message_id
+    legacy_cursor_recovery = bool(original_cursor_id) and (
+        db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 0
+    )
+    new_messages = _select_new_company_messages(
+        messages, gmail_address, company.deletion_last_response_message_id, include_cursor=legacy_cursor_recovery,
+    )
+    if legacy_cursor_recovery and new_messages:
+        _log.info(
+            "check legacy-cursor recovery: company=%s cursor=%s has zero MailMessage rows - "
+            "re-examining the cursor message itself with current extraction/classification",
+            company.id, original_cursor_id,
+        )
     _log.info("check filtered: company=%s new_messages=%d", company.id, len(new_messages))
     if not new_messages:
         if len(messages) <= own_count:
@@ -312,6 +364,7 @@ def check_company_response(
     last_classification = None
     last_message_body = ""
     last_message_occurred_at = now
+    last_was_recovered_cursor_message = False
     for message in new_messages:
         # Quoted prior content (almost always including Cookie Monster's own
         # outgoing message) is stripped BEFORE classification AND before
@@ -328,14 +381,23 @@ def check_company_response(
             company.id, message.get("id"), len(raw_body), len(body_text),
             classification.status, classification.confidence,
         )
+        # Transparent provenance: a re-examined legacy-cursor message is
+        # tagged distinctly from a genuinely brand-new one, so it's always
+        # obvious, later, that Cookie Monster corrected its own earlier
+        # (possibly corrupted) interpretation of this exact message rather
+        # than just having received it for the first time.
+        is_recovered_cursor_message = legacy_cursor_recovery and message.get("id") == original_cursor_id
+        event_evidence = {
+            "quote": classification.quote,
+            "confidence": classification.confidence,
+            "message_id": message.get("id"),
+        }
+        if is_recovered_cursor_message:
+            event_evidence["legacy_cursor_recovered"] = True
         record_event(
             db, company.id,
             _EVENT_TYPE_FOR_STATUS.get(classification.status, EventType.COMPANY_ACKNOWLEDGED),
-            evidence={
-                "quote": classification.quote,
-                "confidence": classification.confidence,
-                "message_id": message.get("id"),
-            },
+            evidence=event_evidence,
         )
         # Mailbox correspondence row for this same message - see app/mail.py
         # for why this lives here rather than a second Gmail fetch: this is
@@ -345,6 +407,7 @@ def check_company_response(
         last_classification = classification
         last_message_body = body_text
         last_message_occurred_at = mail._occurred_at(message)
+        last_was_recovered_cursor_message = is_recovered_cursor_message
 
     if last_classification is not None:
         company.deletion_status = last_classification.status
@@ -356,6 +419,8 @@ def check_company_response(
             "confidence": last_classification.confidence,
             "classified_at": now.isoformat(),
         }
+        if last_was_recovered_cursor_message:
+            company.deletion_evidence["legacy_cursor_recovered"] = True
         if last_classification.status == DeletionStatus.COMPLETED:
             company.deletion_completed_at = now
         chase_engine.on_reply_classified(company, last_classification.status, last_message_body, last_message_occurred_at)

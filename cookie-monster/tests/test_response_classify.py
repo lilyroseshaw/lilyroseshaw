@@ -62,6 +62,81 @@ def test_quote_is_capped_and_never_the_full_message():
     assert len(result.quote) <= 200
 
 
+# --- Account closure/deactivation vs. actual data deletion (real Goop
+# Kitchen case) - a company confirming it closed/deactivated the ACCOUNT
+# must never be conflated with confirming the underlying personal DATA
+# was deleted. See ACCOUNT_CLOSED_DATA_UNVERIFIED_PATTERNS's docstring. ---
+
+GOOP_REAL_TEXT = (
+    "Thank you for reaching out. We've already deactivated the gK Insider account "
+    "associated with your email as requested.\n\n"
+    "Please rest assured that we take data privacy very seriously. Your information "
+    "is protected, handled securely, and never shared publicly.\n\n"
+    "We hope this information helps! Please let us know if you have any questions "
+    "or concerns. We're always happy to help!"
+)
+
+
+def test_real_goop_kitchen_reply_is_account_closed_not_completed():
+    result = ResponseClassifier().classify(GOOP_REAL_TEXT)
+    assert result.status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert result.status != DeletionStatus.COMPLETED
+
+
+def test_account_deactivated_as_requested_alone_is_not_completed():
+    result = ResponseClassifier().classify("We have deactivated your account as requested.")
+    assert result.status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert result.status != DeletionStatus.COMPLETED
+
+
+def test_account_closed_alone_is_not_completed():
+    """Distinct wording ('closed' vs 'deactivated') must be caught the
+    same way - this is about the semantic category, not one exact verb."""
+    result = ResponseClassifier().classify("We have closed your account as requested.")
+    assert result.status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert result.status != DeletionStatus.COMPLETED
+
+
+def test_generic_reassurance_phrases_never_independently_establish_deletion():
+    """'as requested' / 'request processed' / 'privacy is important to
+    us' / 'information is protected' / 'handled securely' / 'not shared
+    publicly' must never, on their own, produce COMPLETED (or any
+    confident status at all) - they carry no deletion evidence."""
+    phrases = [
+        "We processed your request as requested. Thank you.",
+        "Your request has been processed.",
+        "Your privacy is important to us.",
+        "Your information is protected and handled securely.",
+        "Your data is never shared publicly.",
+    ]
+    for text in phrases:
+        result = ResponseClassifier().classify(text)
+        assert result.status != DeletionStatus.COMPLETED, f"{text!r} must never resolve to COMPLETED"
+        assert result.status != DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED, f"{text!r} mentions no account action"
+
+
+def test_explicit_personal_data_deletion_still_classifies_completed():
+    """The new account-closure category must never crowd out a genuine,
+    explicit deletion confirmation - COMPLETED_PATTERNS is checked FIRST
+    in _PATTERN_ORDER and is completely untouched by this change."""
+    result = ResponseClassifier().classify("Your personal information has been deleted from our systems.")
+    assert result.status == DeletionStatus.COMPLETED
+
+
+def test_account_closure_plus_explicit_deletion_resolves_to_completed():
+    """A message that BOTH confirms account closure AND explicitly
+    confirms data deletion (even alongside generic reassurance language)
+    must resolve to the stronger, more specific claim - COMPLETED - never
+    the weaker ACCOUNT_CLOSED_DATA_UNVERIFIED."""
+    text = (
+        "We have closed your account as requested. Your personal information has been "
+        "deleted from our systems. Your privacy is important to us and your data is "
+        "handled securely."
+    )
+    result = ResponseClassifier().classify(text)
+    assert result.status == DeletionStatus.COMPLETED
+
+
 # --- Pass 2: LLM-assisted, with guardrails ---
 
 def _mock_llm(payload: dict):

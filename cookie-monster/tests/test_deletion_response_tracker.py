@@ -152,7 +152,18 @@ def test_own_sent_message_is_never_classified(db):
 
 
 def test_already_processed_message_is_never_reclassified(db):
+    """Modern precedence (see the legacy-cursor-recovery tests further
+    down): a message the CURRENT system already processed - meaning a
+    MailMessage row exists for it, exactly like the real pipeline always
+    creates for every message it examines - must never be reclassified,
+    regardless of what a live re-fetch of the thread returns for it."""
     company = _company(db, deletion_last_response_message_id="m2")
+    db.add(MailMessage(
+        company_id=company.id, direction="inbound", gmail_message_id="m2",
+        gmail_thread_id=company.deletion_thread_id, occurred_at=datetime.datetime(2022, 1, 2),
+        from_display="privacy@widgetco.com", subject="Re: request", body_excerpt="We received your request.",
+    ))
+    db.commit()
     reply = _msg("m2", "We received your request.", "privacy@widgetco.com", 2000)
     with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
         check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
@@ -913,3 +924,238 @@ def test_legacy_finder_breaks_occurred_at_tie_by_id(db):
     found = _find_legacy_acknowledgment_event(db, company)
     assert found is not None
     assert found.id == first.id
+
+
+# =========================================================================
+# Legacy-cursor recovery via the LIVE check path (check_company_response
+# itself) - a second, distinct legacy bug from the MALK UNKNOWN_RESPONSE
+# case above. The real Goop Kitchen case (company 38): deletion_status
+# VERIFICATION_NEEDED, a stored deletion_last_response_message_id, ZERO
+# MailMessage rows (predates mailbox persistence), and evidence that was
+# corrupted at classification time (a fragment of Cookie Monster's OWN
+# outgoing request text, not the company's real words). Re-fetching the
+# SAME tracked thread and re-examining the message AT the cursor with
+# today's extraction/classification - not just messages strictly after
+# it - is what recovers this, entirely within check_company_response's
+# existing pipeline (see _select_new_company_messages's include_cursor).
+# =========================================================================
+
+GOOP_ACCOUNT_CLOSED_TEXT = (
+    "Thank you for reaching out. We've already deactivated the gK Insider account "
+    "associated with your email as requested.\n\n"
+    "Please rest assured that we take data privacy very seriously. Your information "
+    "is protected, handled securely, and never shared publicly.\n\n"
+    "We hope this information helps! Please let us know if you have any questions "
+    "or concerns. We're always happy to help!"
+)
+
+
+def _seed_legacy_verification_needed_cursor(db, company, message_id="goop-m1"):
+    """Reproduces the real Goop Kitchen shape: a stored cursor + corrupted
+    VERIFICATION_NEEDED evidence (a fragment of Cookie Monster's own
+    outgoing request, matched by "identity verification" in old, since-
+    fixed quote-extraction) - and, critically, ZERO MailMessage rows,
+    exactly like a case that predates mailbox persistence."""
+    corrupted_quote = (
+        "ructions for\n> completing any required identity verification.\n>\n"
+        "> This request relates to the account/contact associated with:\n> lilyrose"
+    )
+    event = record_event(
+        db, company.id, EventType.VERIFICATION_REQUESTED,
+        evidence={"quote": corrupted_quote, "confidence": "low", "message_id": message_id},
+    )
+    event.occurred_at = datetime.datetime.utcnow() - datetime.timedelta(days=2)
+    company.deletion_last_response_message_id = message_id
+    company.deletion_status = DeletionStatus.VERIFICATION_NEEDED
+    company.deletion_evidence = {
+        "type": "gmail_reply", "quote": corrupted_quote, "confidence": "low",
+        "classified_at": datetime.datetime.utcnow().isoformat(),
+    }
+    db.commit()
+    return event
+
+
+def test_legacy_cursor_recovery_reclassifies_real_goop_shape(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.VERIFICATION_NEEDED)
+    _seed_legacy_verification_needed_cursor(db, company, message_id="goop-m1")
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 0
+
+    # A live re-fetch of the SAME tracked thread now correctly returns the
+    # real message content at that same message id (today's fixed
+    # extraction/quote-stripping, not the old corrupted capture).
+    reply_time = _epoch_ms(datetime.datetime.utcnow() - datetime.timedelta(days=2))
+    reply = _msg("goop-m1", GOOP_ACCOUNT_CLOSED_TEXT, "hello@goopkitchen.com", reply_time)
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert company.deletion_status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert company.deletion_status != DeletionStatus.COMPLETED
+    assert company.deletion_completed_at is None
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert company.next_followup_at is not None
+    assert company.deletion_evidence["legacy_cursor_recovered"] is True
+
+    # Cursor unchanged (same message, just correctly reprocessed) - never
+    # reset, never pointed at something else:
+    assert company.deletion_last_response_message_id == "goop-m1"
+    # No duplicate original deletion request - this mechanism never sends
+    # anything; only a same-thread re-read.
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id, MailMessage.direction == "outbound").count() == 0
+    # Exactly one MailMessage row now exists (first time this company has
+    # ever had one) - never duplicated on top of it.
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 1
+    event = (
+        db.query(DeletionEvent)
+        .filter(DeletionEvent.company_id == company.id, DeletionEvent.event_type == EventType.ACCOUNT_CLOSED_DATA_UNVERIFIED)
+        .one()
+    )
+    assert event.evidence["legacy_cursor_recovered"] is True
+    # The old, corrupted VERIFICATION_REQUESTED event is untouched, still there:
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id, DeletionEvent.event_type == EventType.VERIFICATION_REQUESTED).count() == 1
+
+
+def test_legacy_cursor_recovery_is_idempotent_across_repeated_checks(db):
+    """Once the first live re-fetch creates the MailMessage row, the
+    legacy-recovery boundary is gone for good - a second identical tick
+    must behave as a completely normal 'nothing new' check, never
+    re-triggering recovery or duplicating anything."""
+    company = _company(db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.VERIFICATION_NEEDED)
+    _seed_legacy_verification_needed_cursor(db, company, message_id="goop-m2")
+    reply_time = _epoch_ms(datetime.datetime.utcnow() - datetime.timedelta(days=2))
+    reply = _msg("goop-m2", GOOP_ACCOUNT_CLOSED_TEXT, "hello@goopkitchen.com", reply_time)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+    assert company.deletion_status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    events_after_first = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count()
+    mailmessages_after_first = db.query(MailMessage).filter(MailMessage.company_id == company.id).count()
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert company.deletion_status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED  # unchanged, not re-derived
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == events_after_first
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == mailmessages_after_first
+
+
+def test_legacy_cursor_recovery_fails_closed_when_still_ambiguous(db):
+    """If the re-extracted real content genuinely doesn't match any
+    known pattern, this must fail closed to UNKNOWN_RESPONSE - never
+    invent a more confident status - while still creating the MailMessage
+    row so the company isn't stuck re-triggering recovery forever."""
+    company = _company(db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.VERIFICATION_NEEDED)
+    _seed_legacy_verification_needed_cursor(db, company, message_id="goop-m3")
+    reply_time = _epoch_ms(datetime.datetime.utcnow() - datetime.timedelta(days=2))
+    reply = _msg("goop-m3", "Thanks for your email!", "hello@goopkitchen.com", reply_time)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 1
+
+
+def test_legacy_cursor_recovery_never_triggers_once_a_mailmessage_row_exists(db):
+    """Modern, MailMessage-backed state always takes precedence - even a
+    company with exactly the same corrupted-looking VERIFICATION_NEEDED
+    status and a cursor set must NOT be reprocessed once a MailMessage row
+    already exists for that message id."""
+    company = _company(db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.VERIFICATION_NEEDED)
+    event = _seed_legacy_verification_needed_cursor(db, company, message_id="goop-m4")
+    db.add(MailMessage(
+        company_id=company.id, direction="inbound", gmail_message_id="goop-m4",
+        gmail_thread_id=company.deletion_thread_id, occurred_at=event.occurred_at,
+        from_display="hello@goopkitchen.com", subject="Re: request", body_excerpt=event.evidence["quote"],
+    ))
+    db.commit()
+
+    reply_time = _epoch_ms(datetime.datetime.utcnow() - datetime.timedelta(days=2))
+    reply = _msg("goop-m4", GOOP_ACCOUNT_CLOSED_TEXT, "hello@goopkitchen.com", reply_time)
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert company.deletion_status == DeletionStatus.VERIFICATION_NEEDED  # untouched
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 1  # the seeded row only
+
+
+def test_legacy_cursor_recovery_never_treats_own_sent_message_as_recoverable(db):
+    """include_cursor only widens WHICH position in the thread counts as
+    'unseen' - it never bypasses _is_own_message filtering. If the
+    message living at the cursor position is genuinely one Cookie Monster
+    itself sent (e.g. the cursor was corrupted to point at the wrong
+    entry), it must still be excluded, exactly like any other own
+    message - never misread as a company reply."""
+    company = _company(db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.VERIFICATION_NEEDED)
+    _seed_legacy_verification_needed_cursor(db, company, message_id="own-sent-1")
+    own_sent = _msg("own-sent-1", "I am requesting deletion of my personal information.", "me@gmail.com", 1000, sent=True)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[own_sent]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert company.deletion_status == DeletionStatus.VERIFICATION_NEEDED  # untouched - own message, never reclassified
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 0
+    # Only the original (pre-seeded) corrupted event exists - no new
+    # reconciliation event was ever recorded for an own message.
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == 1
+
+
+def test_legacy_cursor_recovery_does_not_regress_malk_style_live_check(db):
+    """The same general mechanism, applied to an UNKNOWN_RESPONSE company
+    with zero MailMessage rows (the MALK shape), must ALSO recover
+    correctly via the LIVE check path - complementing, not conflicting
+    with, the dedicated offline reclassify_stale_unknown_response
+    mechanism preserved above."""
+    company = _company(db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.UNKNOWN_RESPONSE)
+    event = record_event(
+        db, company.id, EventType.COMPANY_ACKNOWLEDGED,
+        evidence={"quote": MALK_ACKNOWLEDGMENT_TEXT[:200], "confidence": "low", "message_id": "malk-live-1"},
+    )
+    event.occurred_at = datetime.datetime.utcnow() - datetime.timedelta(days=1)
+    company.deletion_last_response_message_id = "malk-live-1"
+    company.deletion_evidence = {"type": "gmail_reply", "quote": MALK_ACKNOWLEDGMENT_TEXT[:200], "confidence": "low"}
+    db.commit()
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 0
+
+    reply_time = _epoch_ms(datetime.datetime.utcnow() - datetime.timedelta(days=1))
+    reply = _msg("malk-live-1", MALK_ACKNOWLEDGMENT_TEXT, "hello@malkorganics.com", reply_time)
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert company.deletion_status == DeletionStatus.IN_PROGRESS
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 1
+
+
+def test_legacy_cursor_recovery_schedules_chase_from_real_historical_timestamp(db):
+    """Same 'no free 24 hours' rule as the offline reconciliation - the
+    chase schedule is anchored to the message's REAL Gmail internalDate,
+    not the moment this recovery happens to run."""
+    reply_dt = datetime.datetime.utcnow() - datetime.timedelta(days=4)
+    company = _company(db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.VERIFICATION_NEEDED)
+    _seed_legacy_verification_needed_cursor(db, company, message_id="goop-m5")
+    reply_time_ms = int((reply_dt - datetime.datetime(1970, 1, 1)).total_seconds() * 1000)
+    reply = _msg("goop-m5", GOOP_ACCOUNT_CLOSED_TEXT, "hello@goopkitchen.com", reply_time_ms)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    expected = reply_dt + datetime.timedelta(hours=config.FOLLOWUP_INTERVAL_HOURS)
+    assert abs((company.next_followup_at - expected).total_seconds()) < 2
+    assert company.next_followup_at < datetime.datetime.utcnow()  # already overdue
+    assert company in chase_engine.get_companies_due_for_followup(db)
+
+
+# --- Follow-up template / chase behavior for ACCOUNT_CLOSED_DATA_UNVERIFIED ---
+
+def test_account_closed_data_unverified_followup_asks_about_data_deletion(db):
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED,
+        waiting_on=WaitingOn.COMPANY, next_followup_at=datetime.datetime(2020, 1, 1),
+    )
+    with patch("app.chase_engine._send_followup_email", return_value={"id": "sent-1", "threadId": "thread123"}) as mock_send:
+        sent = chase_engine.process_followups(db, creds=MagicMock(), gmail_address="me@gmail.com")
+    assert sent == 1
+    body = mock_send.call_args.args[3]
+    assert "personal data" in body.lower() or "personal information" in body.lower()
+    assert "retained" in body.lower()
+    assert "attempt" not in body.lower()  # internal counter never shown to the company
