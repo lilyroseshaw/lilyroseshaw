@@ -610,11 +610,11 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
     check_status = request.query_params.get("check_status")
     check_message = None
     if check_result == "new_response":
-        check_message = "📬 New mail — " + _CHECK_RESULT_STATUS_LABELS.get(check_status, "updated") + ". See your mailbox for the full letter."
+        check_message = "New mail — " + _CHECK_RESULT_STATUS_LABELS.get(check_status, "updated") + ". See your mailbox for the full letter."
     elif check_result == "no_new_response":
-        check_message = "No new response yet."
+        check_message = "No new reply yet — checked just now."
     elif check_result == "check_failed":
-        check_message = "Couldn't check for a response right now — please try again shortly."
+        check_message = "We couldn't check this conversation. Try again."
 
     context = {
         "request": request,
@@ -819,11 +819,19 @@ def _check_attach_eligible(db, company: Company) -> str | None:
     thread attachment, else None. Checked before BOTH the preview and the
     confirm step - state can change between the two requests (another tab,
     a background check completing first), so confirm must never trust that
-    what was true at preview time is still true now."""
+    what was true at preview time is still true now.
+
+    Deliberately allows RE-attaching even when deletion_thread_id is
+    already set (see confirm_attach_thread's "previous_thread_id" evidence
+    field) - not just the original "we never sent this ourselves" case.
+    Some companies' reply systems don't preserve email threading headers,
+    so Gmail can start a genuinely new thread for what is, to the company,
+    obviously a reply - the thread Cookie Monster auto-captured at send
+    time then never sees anything again. Without this, a user in that
+    situation would have no way to ever point tracking at the
+    conversation that actually has their reply in it."""
     if not google_oauth.has_readonly_scope(db):
         return "Response tracking is not enabled - enable it first to attach a confirmation email."
-    if company.deletion_thread_id:
-        return "This company already has a tracked email thread."
     if company.deletion_status in DeletionStatus.TERMINAL:
         return "This request is already resolved - there's nothing left to track."
     return None
@@ -911,12 +919,19 @@ def confirm_attach_thread(company_id: int, message_id: str = Form(...)):
             )
             raise HTTPException(status_code=400, detail=detail) from exc
 
+        previous_thread_id = company.deletion_thread_id
         company.deletion_thread_id = resolved["thread_id"]
+        # Retargeting an already-tracked thread never leaves the dedup
+        # marker pointing at a message id from the OLD thread - the next
+        # check must treat every message in the new one as unseen.
+        if previous_thread_id and previous_thread_id != resolved["thread_id"]:
+            company.deletion_last_response_message_id = None
         record_event(
             db, company.id, EventType.THREAD_ASSOCIATED, source=EventSource.USER,
             evidence={
                 "message_id": resolved["message_id"],
                 "thread_id": resolved["thread_id"],
+                "previous_thread_id": previous_thread_id,
                 "from": resolved["from"],
                 "subject": resolved["subject"],
                 "date": resolved["date"],

@@ -263,7 +263,7 @@
         </details>
         {% endif %}
 
-        {% set attach_eligible = response_tracking_enabled and not c.deletion_thread_id and c.deletion_status not in ("COMPLETED", "REJECTED", "FAILED") %}
+        {% set attach_eligible = response_tracking_enabled and c.deletion_status not in ("COMPLETED", "REJECTED", "FAILED") %}
         {% set attach_pending_for_this_company = (attach_preview and attach_preview.company_id == c.id) or (attach_preview_error and attach_preview_error.company_id == c.id) %}
         {% if attach_eligible or attach_pending_for_this_company %}
         <div class="attach-thread-block">
@@ -284,11 +284,16 @@
           {% endif %}
           {% if attach_eligible %}
           <details class="secondary-action">
+            {% if c.deletion_thread_id %}
+            <summary>Seeing a reply in Gmail that isn't showing here?</summary>
+            <p class="state-detail">Paste the Gmail link or message ID for {{ c.name }}'s actual reply and Cookie Monster will start tracking that conversation instead. We'll show you just the sender/subject/date before changing anything - never the message body.</p>
+            {% else %}
             <summary>Submitted this yourself? Add the confirmation email</summary>
             <p class="state-detail">Paste the Gmail link or message ID for {{ c.name }}'s confirmation email. We'll show you just the sender/subject/date before adding anything - never the message body.</p>
+            {% endif %}
             <form method="post" action="/api/companies/{{ c.id }}/deletion/attach-thread/preview" data-loading-text="Looking up…">
               <input type="text" name="gmail_ref" placeholder="Gmail link or message ID" required>
-              <button type="submit" class="btn btn-ghost btn-small">Add confirmation email</button>
+              <button type="submit" class="btn btn-ghost btn-small">{{ "Use this email instead" if c.deletion_thread_id else "Add confirmation email" }}</button>
             </form>
           </details>
           {% endif %}

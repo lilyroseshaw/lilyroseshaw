@@ -117,7 +117,7 @@ def test_no_new_response_never_changes_status_and_says_so(tmp_path, monkeypatch)
     assert "check_result=no_new_response" in location
 
     dashboard_resp = client.get(location.split("#")[0])
-    assert "No new response yet." in dashboard_resp.text
+    assert "No new reply yet" in dashboard_resp.text
 
     db.refresh(company)
     assert company.deletion_status == original_status  # never changed merely to produce UI feedback
@@ -142,7 +142,8 @@ def test_check_failed_shown_without_touching_status(tmp_path, monkeypatch):
     assert "check_result=check_failed" in location
 
     dashboard_resp = client.get(location.split("#")[0])
-    assert "check for a response right now" in dashboard_resp.text  # avoids the apostrophe Jinja HTML-escapes
+    assert "couldn" in dashboard_resp.text.lower()  # avoids the apostrophe Jinja HTML-escapes
+    assert "check this conversation" in dashboard_resp.text.lower()
 
     db.refresh(company)
     assert company.deletion_status == original_status

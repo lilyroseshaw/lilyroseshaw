@@ -196,14 +196,20 @@ def test_preview_rejects_nonexistent_message(db, client):
     assert company.deletion_thread_id is None
 
 
-def test_preview_ineligible_when_thread_already_attached(db, client):
+def test_preview_allowed_when_retargeting_an_already_attached_thread(db, client):
+    """A company whose reply broke email threading on their end (common
+    with helpdesk/ticketing senders) needs a way to repoint tracking at
+    the conversation that actually has their reply - preview must not
+    refuse this just because a (wrong) thread is already attached."""
     company = _lyft(db, deletion_thread_id="already-attached")
     _grant_readonly(db)
-    resp = client.post(
-        f"/api/companies/{company.id}/deletion/attach-thread/preview",
-        data={"gmail_ref": "msg-lyft-1"},
-    )
-    assert "already has a tracked email thread" in resp.text
+    with patch("app.google_oauth.load_credentials", return_value=MagicMock()), \
+         patch("app.google_oauth.fetch_message_preview", return_value=_fake_preview()):
+        resp = client.post(
+            f"/api/companies/{company.id}/deletion/attach-thread/preview",
+            data={"gmail_ref": "msg-lyft-1"},
+        )
+    assert "Is this" in resp.text  # the preview confirmation prompt rendered, not an ineligibility error
 
 
 def test_preview_ineligible_for_terminal_status(db, client):
@@ -216,19 +222,30 @@ def test_preview_ineligible_for_terminal_status(db, client):
     assert "already resolved" in resp.text
 
 
-def test_confirm_requires_prior_preview_style_validation(db, client):
-    """Confirm re-validates independently - it must reject just as readily
-    as preview does if eligibility no longer holds, e.g. hitting confirm
-    directly without ever previewing is fine (it just re-resolves), but
-    hitting it when a thread is ALREADY attached must be rejected."""
-    company = _lyft(db, deletion_thread_id="already-attached")
+def test_confirm_retargets_an_already_attached_thread_and_records_previous(db, client):
+    """Confirm allows overwriting an already-attached (wrong) thread with
+    the one the user just identified, records the previous thread id in
+    the audit event for traceability, and resets the dedup marker so the
+    next check treats every message in the new thread as unseen."""
+    company = _lyft(db, deletion_thread_id="already-attached", deletion_last_response_message_id="old-msg-id")
     _grant_readonly(db)
-    resp = client.post(
-        f"/api/companies/{company.id}/deletion/attach-thread/confirm",
-        data={"message_id": "msg-lyft-1"},
+    with patch("app.google_oauth.load_credentials", return_value=MagicMock()), \
+         patch("app.google_oauth.fetch_message_preview", return_value=_fake_preview()):
+        resp = client.post(
+            f"/api/companies/{company.id}/deletion/attach-thread/confirm",
+            data={"message_id": "msg-lyft-1"},
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    db.refresh(company)
+    assert company.deletion_thread_id != "already-attached"
+    assert company.deletion_last_response_message_id is None
+    event = (
+        db.query(DeletionEvent)
+        .filter(DeletionEvent.company_id == company.id, DeletionEvent.event_type == EventType.THREAD_ASSOCIATED)
+        .one()
     )
-    assert resp.status_code == 400
-    assert "already has a tracked email thread" in resp.json()["detail"]
+    assert event.evidence["previous_thread_id"] == "already-attached"
 
 
 def test_confirm_stores_thread_id_and_records_user_event(db, client):

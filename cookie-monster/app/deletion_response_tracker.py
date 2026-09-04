@@ -33,6 +33,8 @@ Privacy/safety rules enforced here:
 """
 import base64
 import datetime
+import email.utils
+import logging
 import re
 
 from bs4 import BeautifulSoup
@@ -45,6 +47,21 @@ from app.deletion_constants import DeletionStatus, EventType
 from app.deletion_events import record_event
 from app.models import Company
 from app.response_classify import ResponseClassifier
+
+# Diagnostic-only logging for tracing exactly where a real reply gets lost
+# in the pipeline (fetched -> own-message-filtered -> new -> classified ->
+# persisted). Deliberately never logs OAuth tokens, secrets, or full
+# message bodies - only counts, ids, domains, and classification labels,
+# same allow-list the response-check audit events already use. Explicit
+# handler/level for the same reason deletion_queue.py's logger has one -
+# uvicorn's default root level would otherwise silently swallow it.
+_log = logging.getLogger("cookie_monster.response_tracker")
+_log.setLevel(logging.INFO)
+if not _log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s [cookie-monster-reply-check] %(message)s"))
+    _log.addHandler(_handler)
+    _log.propagate = False
 
 _EVENT_TYPE_FOR_STATUS = {
     DeletionStatus.IN_PROGRESS: EventType.COMPANY_ACKNOWLEDGED,
@@ -153,11 +170,24 @@ def extract_body_text(message: dict) -> str:
 # --- Own-message filtering / dedup ---
 
 def _is_own_message(message: dict, gmail_address: str) -> bool:
+    """A real, reproducible bug lived here: comparing gmail_address as a
+    raw SUBSTRING of the whole From header, rather than the header's
+    actual parsed address. Some helpdesk/ticketing senders format a
+    reply's From header in ways that legitimately CONTAIN the
+    recipient's own address as text - "Support <support@co.com> on
+    behalf of me@gmail.com", '"me@gmail.com via Co Support" <...>', a
+    parenthetical "(me@gmail.com)" note - none of those mean the message
+    is actually FROM this account. A substring match silently treated
+    every one of those as "our own message" and discarded a genuine
+    company reply before it ever reached classification, in the SAME
+    tracked thread, evidence-free. Parsing the address out and comparing
+    it exactly closes this."""
     if "SENT" in message.get("labelIds", []):
         return True
     headers = message.get("payload", {}).get("headers", [])
     from_header = next((h["value"] for h in headers if h.get("name", "").lower() == "from"), "")
-    return gmail_address.lower() in from_header.lower()
+    sender_address = email.utils.parseaddr(from_header)[1]
+    return sender_address.lower() == gmail_address.lower()
 
 
 def _select_new_company_messages(messages: list[dict], gmail_address: str, last_processed_id: str | None) -> list[dict]:
@@ -223,6 +253,10 @@ def check_company_response(
     now = datetime.datetime.utcnow()
     company.deletion_response_checked_at = now
 
+    _log.info(
+        "check start: company=%s domain=%s thread=%s last_processed=%s",
+        company.id, company.domain, company.deletion_thread_id, company.deletion_last_response_message_id,
+    )
     try:
         messages = google_oauth.fetch_thread_messages(creds, company.deletion_thread_id)
     except HttpError as exc:
@@ -254,8 +288,22 @@ def check_company_response(
     # whether there's anything new to classify.
     company.deletion_response_check_failures = 0
 
+    own_count = sum(1 for m in messages if _is_own_message(m, gmail_address))
+    _log.info(
+        "check fetched: company=%s thread=%s total_messages=%d own_messages=%d",
+        company.id, company.deletion_thread_id, len(messages), own_count,
+    )
     new_messages = _select_new_company_messages(messages, gmail_address, company.deletion_last_response_message_id)
+    _log.info("check filtered: company=%s new_messages=%d", company.id, len(new_messages))
     if not new_messages:
+        if len(messages) <= own_count:
+            _log.info(
+                "check found nothing yet: company=%s thread=%s has only our own message(s) so far "
+                "- if the company already replied in Gmail, their reply likely landed in a DIFFERENT "
+                "thread (broken References/In-Reply-To on their end is common) - use 'Add confirmation "
+                "email' / 'Use this email instead' on the dashboard to point tracking at the right one.",
+                company.id, company.deletion_thread_id,
+            )
         db.commit()
         return
 
@@ -267,8 +315,15 @@ def check_company_response(
         # why this matters. The stripped text is used for classification and
         # for the mailbox's MailMessage.body_excerpt below (capped, never
         # the full raw message) - it is not otherwise kept around.
-        body_text = strip_quoted_reply(extract_body_text(message))
+        raw_body = extract_body_text(message)
+        body_text = strip_quoted_reply(raw_body)
         classification = classifier.classify(body_text)
+        _log.info(
+            "check classifying: company=%s message=%s extracted_chars=%d stripped_chars=%d "
+            "classification=%s confidence=%s",
+            company.id, message.get("id"), len(raw_body), len(body_text),
+            classification.status, classification.confidence,
+        )
         record_event(
             db, company.id,
             _EVENT_TYPE_FOR_STATUS.get(classification.status, EventType.COMPANY_ACKNOWLEDGED),

@@ -105,6 +105,32 @@ def test_extract_body_text_empty_when_nothing_decodable():
 
 # --- own-message filtering + dedup ---
 
+@pytest.mark.parametrize(
+    "from_header",
+    [
+        "Support <support@widgetco.com> on behalf of me@gmail.com",  # "on behalf of" ticketing pattern
+        '"me@gmail.com via Widget Co Support" <support@widgetco.com>',  # Gmail-style "via" reply-list format
+        "Privacy Team <privacy@widgetco.com> (me@gmail.com)",  # parenthetical note
+    ],
+)
+def test_real_company_reply_is_never_mistaken_for_own_message(db, from_header):
+    """Regression for a real bug: own-message detection used to check
+    whether the connected Gmail address appeared ANYWHERE in the raw
+    From header string, rather than comparing the header's actual parsed
+    address. Several real helpdesk/ticketing senders format a reply's
+    From header in ways that legitimately contain the recipient's own
+    address as text without the message being from that account at all -
+    the substring check silently discarded a genuine, same-thread company
+    reply before it ever reached classification."""
+    company = _company(db)
+    reply = _msg("m2", "We are currently reviewing your request.", from_header, 2000)
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+    assert company.deletion_status == DeletionStatus.IN_PROGRESS
+    assert company.deletion_last_response_message_id == "m2"
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == 1
+
+
 def test_own_sent_message_is_never_classified(db):
     company = _company(db)
     sent = _msg("m1", "please delete my data", "me@gmail.com", 1000, sent=True)
@@ -261,6 +287,96 @@ def test_full_body_text_is_never_stored_in_evidence(db):
         check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
     assert long_body not in str(company.deletion_evidence)
     assert len(company.deletion_evidence.get("quote", "")) <= 200
+
+
+# --- realistic real-world thread shapes (regression coverage for the
+# real-Gmail-reply bug report: every test above only ever hands
+# fetch_thread_messages a single already-filtered message, never the full
+# thread INCLUDING Cookie Monster's own SENT message the way Gmail's
+# threads().get() actually returns it) ---
+
+def test_realistic_two_message_thread_finds_the_reply(db):
+    """The exact real shape: fetch_thread_messages returns BOTH Cookie
+    Monster's own outgoing request (labelIds=["SENT"], sent first) AND the
+    company's reply (labelIds=["INBOX"], sent later) in the same thread -
+    not just the reply in isolation like every other test in this file."""
+    company = _company(db)
+    own_sent = _msg("m1", "I am requesting deletion of my personal information.", "me@gmail.com", 1000, sent=True)
+    reply = _msg("m2", "We are currently reviewing your request.", "privacy@widgetco.com", 2000)
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[own_sent, reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+    assert company.deletion_status == DeletionStatus.IN_PROGRESS
+    assert company.deletion_last_response_message_id == "m2"
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == 1
+
+
+def test_realistic_two_message_thread_out_of_order_from_gmail(db):
+    """Gmail does not guarantee messages come back in chronological order -
+    _select_new_company_messages must sort by internalDate itself, not
+    trust list order."""
+    company = _company(db)
+    own_sent = _msg("m1", "I am requesting deletion of my personal information.", "me@gmail.com", 1000, sent=True)
+    reply = _msg("m2", "We are currently reviewing your request.", "privacy@widgetco.com", 2000)
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply, own_sent]):  # reversed
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+    assert company.deletion_status == DeletionStatus.IN_PROGRESS
+    assert company.deletion_last_response_message_id == "m2"
+
+
+def _html_msg(msg_id, html_body, from_addr, internal_date):
+    return {
+        "id": msg_id,
+        "labelIds": ["INBOX"],
+        "internalDate": str(internal_date),
+        "payload": {
+            "headers": [{"name": "From", "value": from_addr}],
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {"mimeType": "text/html", "body": {"data": _b64(html_body)}},
+            ],
+        },
+    }
+
+
+def test_realistic_html_only_corporate_reply_with_gmail_quote(db):
+    """Many real company privacy-team replies are HTML-only (no text/plain
+    part at all - common for Zendesk/Salesforce/Outlook-originated mail),
+    and Gmail wraps the quoted original request in a
+    <div class="gmail_quote"> the reply's own new content sits outside of.
+    The company's new words must be extracted and classified; Cookie
+    Monster's own quoted request text must never leak into classification."""
+    company = _company(db)
+    own_sent = _msg("m1", "I am requesting deletion of my personal information pursuant to CCPA.", "me@gmail.com", 1000, sent=True)
+    html = (
+        "<div dir=\"ltr\">Thanks for reaching out. Before we can process your request, "
+        "we need to verify your identity. Please reply with your account email.</div>"
+        "<div class=\"gmail_quote\">"
+        "<div class=\"gmail_attr\">On Mon, Jan 1, 2024 at 10:00 AM Me &lt;me@gmail.com&gt; wrote:<br></div>"
+        "<blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left:1px solid #ccc;padding-left:1ex\">"
+        "I am requesting deletion of my personal information pursuant to CCPA."
+        "</blockquote></div>"
+    )
+    reply = _html_msg("m2", html, "Privacy Team <privacy@widgetco.com>", 2000)
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[own_sent, reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+    assert company.deletion_status == DeletionStatus.VERIFICATION_NEEDED
+    assert company.deletion_last_response_message_id == "m2"
+    quote = company.deletion_evidence["quote"]
+    assert "verify your identity" in quote.lower()
+    assert "ccpa" not in quote.lower()  # Cookie Monster's own quoted request must never leak in
+
+
+def test_no_reply_yet_leaves_status_and_marker_untouched(db):
+    """Thread contains only Cookie Monster's own request so far - a
+    genuine 'nothing new yet', not a bug, and must look identical in
+    outcome to a healthy no-op check (no event, no status change)."""
+    company = _company(db)
+    own_sent = _msg("m1", "I am requesting deletion of my personal information.", "me@gmail.com", 1000, sent=True)
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[own_sent]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+    assert company.deletion_status == DeletionStatus.SUBMITTED
+    assert company.deletion_last_response_message_id is None
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == 0
 
 
 # --- process_response_checks batch entry point ---
