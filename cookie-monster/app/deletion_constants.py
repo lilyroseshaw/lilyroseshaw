@@ -359,6 +359,97 @@ class RecipeChoice:
     ALL = {FULL_CLEAN, JUST_THE_ESSENTIALS, LEAVE_IT_BE}
 
 
+class AccountOutcome:
+    """Whether the ACCOUNT itself (as distinct from the personal data it
+    holds) is known to be kept or closed - one independent axis of
+    CaseOutcome (see app/case_outcome.py). Derived only from evidence
+    that explicitly addresses account status; a status silent on the
+    account is UNKNOWN, never guessed as KEPT by default."""
+    KEPT = "KEPT"
+    CLOSED = "CLOSED"
+    UNKNOWN = "UNKNOWN"
+
+    ALL = {KEPT, CLOSED, UNKNOWN}
+
+
+class PersonalDataOutcome:
+    """Progress of the underlying PERSONAL DATA deletion - independent of
+    account status (see AccountOutcome). One independent axis of
+    CaseOutcome (see app/case_outcome.py)."""
+    RETAINED = "RETAINED"
+    DELETION_REQUESTED = "DELETION_REQUESTED"
+    PARTIALLY_DELETED = "PARTIALLY_DELETED"
+    DELETION_CONFIRMED = "DELETION_CONFIRMED"
+    UNKNOWN = "UNKNOWN"
+
+    ALL = {RETAINED, DELETION_REQUESTED, PARTIALLY_DELETED, DELETION_CONFIRMED, UNKNOWN}
+
+
+class NonessentialTrackingOutcome:
+    """Progress of a JUST_THE_ESSENTIALS-specific ask: cleaning up
+    nonessential tracking/profile data while keeping the account. Only
+    meaningful when RecipeChoice.JUST_THE_ESSENTIALS was selected - see
+    CaseOutcome.nonessential_tracking, which is None otherwise (not
+    applicable, not merely unresolved). No execution engine exists for
+    this recipe yet, so CONFIRMED is not reachable in this milestone."""
+    CLEANUP_REQUESTED = "CLEANUP_REQUESTED"
+    CONFIRMED = "CONFIRMED"
+    UNRESOLVED = "UNRESOLVED"
+
+    ALL = {CLEANUP_REQUESTED, CONFIRMED, UNRESOLVED}
+
+
+class OptOutOutcome:
+    """Progress of a sale/sharing/behavioral-ad opt-out ask - another
+    JUST_THE_ESSENTIALS-specific axis, None when not applicable (see
+    CaseOutcome.opt_out). No execution engine exists for this recipe yet,
+    so CONFIRMED is not reachable in this milestone."""
+    REQUESTED = "REQUESTED"
+    CONFIRMED = "CONFIRMED"
+    UNKNOWN = "UNKNOWN"
+
+    ALL = {REQUESTED, CONFIRMED, UNKNOWN}
+
+
+class RetentionOutcome:
+    """Whether the company has disclosed anything about retaining data
+    after a deletion request - independent of whether deletion itself is
+    confirmed (a company can disclose a lawful retention period for a
+    subset of data while everything else is deleted). No current
+    DeletionStatus/evidence shape captures a structured retention
+    disclosure, so every status maps to NONE_DISCLOSED today - this axis
+    exists so a future structured disclosure (e.g. a classifier pattern or
+    evidence field naming a legal retention reason) has somewhere
+    evidence-derived to go, without a schema change. See
+    app/case_outcome.py."""
+    NONE_DISCLOSED = "NONE_DISCLOSED"
+    LAWFUL_DISCLOSED = "LAWFUL_DISCLOSED"
+    AMBIGUOUS = "AMBIGUOUS"
+
+    ALL = {NONE_DISCLOSED, LAWFUL_DISCLOSED, AMBIGUOUS}
+
+
+class CaseState:
+    """The coarse, overall state of a PrivacyCase - the last of
+    CaseOutcome's independent axes (see app/case_outcome.py). Evidence-
+    derived like every other axis: it reflects what the COMPANY/engine
+    has actually done, never the user's Cleanup Recipe disposition by
+    itself. In particular, LEAVE_IT_BE (Pantry) does NOT force RESOLVED -
+    that would falsely claim a privacy result was achieved merely because
+    the user decided not to pursue one. "The user chose not to pursue
+    this further" is carried entirely by CaseOutcome.is_pantry, a
+    separate field; overall stays whatever the evidence already says
+    (typically WORKING for a case with no evidence yet) regardless of
+    is_pantry. Higher layers should consult is_pantry - not overall - to
+    decide whether to keep chasing/nudging a company."""
+    WORKING = "WORKING"
+    NEEDS_USER = "NEEDS_USER"
+    RESOLVED = "RESOLVED"
+    UNRESOLVED = "UNRESOLVED"
+
+    ALL = {WORKING, NEEDS_USER, RESOLVED, UNRESOLVED}
+
+
 class EventSource:
     SYSTEM = "SYSTEM"
     USER = "USER"
