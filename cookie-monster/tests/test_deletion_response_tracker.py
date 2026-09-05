@@ -180,6 +180,38 @@ def test_new_reply_is_classified_and_dedup_marker_updated(db):
     assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == 1
 
 
+# --- Audit-event precision: UNKNOWN_RESPONSE must never be recorded under
+# EventType.COMPANY_ACKNOWLEDGED, which asserts something the classifier
+# never established (the live Goop Kitchen case, company 38, surfaced
+# this - event 109 recorded COMPANY_ACKNOWLEDGED for a reply the
+# classifier genuinely could not place at the time). IN_PROGRESS/SUBMITTED
+# keep COMPANY_ACKNOWLEDGED - both genuinely represent the company
+# acknowledging the request. ---
+
+def test_unknown_response_records_unclassified_reply_received_not_acknowledged(db):
+    company = _company(db)
+    reply = _msg("m2", "Thanks for your email!", "privacy@widgetco.com", 2000)
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+    assert company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE
+    event = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).one()
+    assert event.event_type == EventType.UNCLASSIFIED_REPLY_RECEIVED
+    assert event.event_type != EventType.COMPANY_ACKNOWLEDGED
+
+
+def test_in_progress_still_records_company_acknowledged(db):
+    """Unlike UNKNOWN_RESPONSE, IN_PROGRESS genuinely represents the
+    company acknowledging the request (a ticket/case, "reviewing it",
+    etc.) - this mapping is unchanged by the UNKNOWN_RESPONSE fix."""
+    company = _company(db)
+    reply = _msg("m2", "We are currently reviewing your request.", "privacy@widgetco.com", 2000)
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+    assert company.deletion_status == DeletionStatus.IN_PROGRESS
+    event = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).one()
+    assert event.event_type == EventType.COMPANY_ACKNOWLEDGED
+
+
 # --- the critical refinement: transient failures never overwrite status ---
 
 def test_transient_network_error_does_not_change_status(db):
@@ -1159,3 +1191,54 @@ def test_account_closed_data_unverified_followup_asks_about_data_deletion(db):
     assert "personal data" in body.lower() or "personal information" in body.lower()
     assert "retained" in body.lower()
     assert "attempt" not in body.lower()  # internal counter never shown to the company
+
+
+# --- Regression: the EXACT live Goop Kitchen reply, in a normal (non-
+# legacy) modern check - end-to-end through check_company_response AND
+# chase_engine, exercising the classifier fix for the mid-sentence line
+# wrap + curly apostrophe that caused the live miss (commit 00553b7
+# produced UNKNOWN_RESPONSE for this exact body instead of
+# ACCOUNT_CLOSED_DATA_UNVERIFIED). No network access and no live-DB
+# manipulation - a mocked single-thread fetch and an in-memory sqlite db,
+# same as every other test in this module. ---
+
+GOOP_LIVE_REPLY_EXACT = (
+    "Hi Lily,\n\n"
+    "Thank you for reaching out.  We’ve already deactivated the gK Insider\n"
+    "account associated with lilyroseshaw@gmail.com as requested.\n\n"
+    " Please rest assured that we take data privacy very seriously. Your\n"
+    "information is protected, handled securely, and never shared publicly.\n\n"
+    "We hope this information helps! Please let us know if you have any\n"
+    "questions or concerns. We're always happy to help!\n\n"
+    "Best,\n\n"
+    "In Your Service | Guest Experience Team\n\n"
+    "p: 310.954.1286\n\n"
+    "goopkitchen.com @goopkitchen <https://instagram.com/goopkitchen>"
+)
+
+
+def test_real_goop_live_reply_classifies_and_schedules_correct_followup(db):
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.SUBMITTED,
+        deletion_thread_id="thread123",
+    )
+    reply_time = _epoch_ms(datetime.datetime.utcnow() - datetime.timedelta(hours=2))
+    reply = _msg("1a05f940a5f400f3", GOOP_LIVE_REPLY_EXACT, "hello@goopkitchen.com", reply_time)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[reply]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert company.deletion_status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert company.deletion_status != DeletionStatus.UNKNOWN_RESPONSE
+    assert company.deletion_completed_at is None
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert company.next_followup_at is not None
+    company.next_followup_at = datetime.datetime(2020, 1, 1)  # force it due, without sending anything yet
+    db.commit()
+
+    with patch("app.chase_engine._send_followup_email", return_value={"id": "sent-1", "threadId": "thread123"}) as mock_send:
+        sent = chase_engine.process_followups(db, creds=MagicMock(), gmail_address="me@gmail.com")
+    assert sent == 1
+    body = mock_send.call_args.args[3]
+    assert "personal data" in body.lower() or "personal information" in body.lower()
+    assert "retained" in body.lower()

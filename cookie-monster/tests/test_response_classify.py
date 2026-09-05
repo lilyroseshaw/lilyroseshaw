@@ -137,6 +137,174 @@ def test_account_closure_plus_explicit_deletion_resolves_to_completed():
     assert result.status == DeletionStatus.COMPLETED
 
 
+def test_forward_order_closure_plus_explicit_deletion_resolves_to_completed():
+    """The forward-order counterpart to the test above ('we closed your
+    account AND deleted your information', not 'account has been closed
+    and ... deleted') must also resolve to COMPLETED, not the weaker
+    ACCOUNT_CLOSED_DATA_UNVERIFIED."""
+    result = ResponseClassifier().classify(
+        "We closed your account and deleted your personal information."
+    )
+    assert result.status == DeletionStatus.COMPLETED
+
+
+def test_negated_deletion_language_does_not_false_positive_into_completed():
+    """The new forward-order COMPLETED pattern is anchored to an actual
+    closure verb immediately before 'account' specifically so it can't
+    fire on a bare 'deleted your information' with no closure context -
+    which would otherwise catch obviously negated claims like this."""
+    result = ResponseClassifier().classify(
+        "We have not deleted your personal information because your account is still active."
+    )
+    assert result.status != DeletionStatus.COMPLETED
+
+
+# =========================================================================
+# Company-agnosticism: every rule above must generalize to ANY company's
+# wording, not just the two real regressions (MALK Organics, Goop Kitchen)
+# that originally exposed these gaps. None of response_classify.py's logic
+# ever references a company name, domain, or message id - these fabricated
+# companies/domains prove that empirically, independent of the real-case
+# regression tests further down this file.
+# =========================================================================
+
+def test_arbitrary_company_account_closure_wording_is_account_closed_not_completed():
+    result = ResponseClassifier().classify(
+        "Hi there, this is Acme Rewards support. We have closed your rewards account per your request."
+    )
+    assert result.status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert result.status != DeletionStatus.COMPLETED
+
+
+def test_arbitrary_company_reverse_order_closure_with_email_is_account_closed():
+    result = ResponseClassifier().classify(
+        "This confirms that the account associated with user@example.com has been deactivated."
+    )
+    assert result.status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert result.status != DeletionStatus.COMPLETED
+
+
+def test_arbitrary_company_explicit_account_and_data_deletion_is_completed():
+    result = ResponseClassifier().classify(
+        "Team at Widgetify here - we closed your account and deleted your personal information."
+    )
+    assert result.status == DeletionStatus.COMPLETED
+
+
+def test_arbitrary_company_ambiguous_reply_is_unknown_response():
+    result = ResponseClassifier().classify(
+        "Thanks so much for being a valued customer of Widgetify! We love hearing from you."
+    )
+    assert result.status == DeletionStatus.UNKNOWN_RESPONSE
+
+
+def test_arbitrary_company_unrelated_account_and_closed_mentions_do_not_false_positive():
+    result = ResponseClassifier().classify(
+        "Your Widgetify account is in good standing. Note that our office was closed "
+        "yesterday for a company holiday."
+    )
+    assert result.status != DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert result.status != DeletionStatus.COMPLETED
+
+
+# --- Regression: the EXACT real Goop Kitchen reply that was live-tested
+# against commit 00553b7. The classifier missed this because Python's `.`
+# never matches `\n`, and this reply happens to hard-wrap the line right
+# in between "...Insider" and "account associated with..." - a plain-text
+# formatting artifact, not a wording gap. See
+# _normalize_whitespace's docstring in response_classify.py. ---
+
+GOOP_LIVE_REPLY_EXACT = (
+    "Hi Lily,\n\n"
+    "Thank you for reaching out.  We’ve already deactivated the gK Insider\n"
+    "account associated with lilyroseshaw@gmail.com as requested.\n\n"
+    " Please rest assured that we take data privacy very seriously. Your\n"
+    "information is protected, handled securely, and never shared publicly.\n\n"
+    "We hope this information helps! Please let us know if you have any\n"
+    "questions or concerns. We're always happy to help!\n\n"
+    "Best,\n\n"
+    "In Your Service | Guest Experience Team\n\n"
+    "p: 310.954.1286\n\n"
+    "goopkitchen.com @goopkitchen <https://instagram.com/goopkitchen>"
+)
+
+
+def test_real_goop_live_reply_with_line_wrap_and_curly_apostrophe_is_account_closed():
+    """The exact body captured from the live Goop Kitchen thread (company
+    38) - curly apostrophe, mid-sentence hard line wrap, and all. Must
+    classify as ACCOUNT_CLOSED_DATA_UNVERIFIED, not UNKNOWN_RESPONSE (the
+    live miss) and not COMPLETED."""
+    result = ResponseClassifier().classify(GOOP_LIVE_REPLY_EXACT)
+    assert result.status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert result.status != DeletionStatus.UNKNOWN_RESPONSE
+    assert result.status != DeletionStatus.COMPLETED
+
+
+def test_account_closure_detected_regardless_of_apostrophe_style_and_line_wrap():
+    """Straight vs curly apostrophe, and whether the sentence happens to
+    wrap onto a second line, must never change the outcome - only the
+    semantic content matters."""
+    variants = [
+        "We've already deactivated the gK Insider account associated with your email as requested.",
+        "We’ve already deactivated the gK Insider account associated with your email as requested.",
+        "We've already deactivated the gK Insider\naccount associated with your email as requested.",
+        "We’ve already deactivated the gK Insider\naccount associated with your email as requested.",
+    ]
+    for text in variants:
+        result = ResponseClassifier().classify(text)
+        assert result.status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED, f"failed for {text!r}"
+
+
+def test_account_closure_detected_with_intervening_brand_or_program_name():
+    """A closure verb and 'account' separated by a brand/program name (not
+    just 'your'/'the') must still be caught - the gap is about intervening
+    descriptive words, not the exact pronoun used."""
+    variants = [
+        "we deactivated your account",
+        "we've deactivated your account",
+        "we have deactivated the account",
+        "we've already deactivated the gK Insider account",
+        "we've already deactivated the Rewards Program membership account",
+        "your account has been closed",
+        "we closed your account",
+    ]
+    for text in variants:
+        result = ResponseClassifier().classify(text)
+        assert result.status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED, f"failed for {text!r}"
+        assert result.status != DeletionStatus.COMPLETED
+
+
+def test_account_associated_with_email_has_been_deactivated_reverse_order():
+    """The reversed shape - 'account' named first, closure verb later,
+    with a long token (an email address) in between - must also match.
+    This is the one shape that genuinely needs a wider gap than a small
+    fixed character budget (see the pattern's own comment for why that
+    gap is a named, narrow clause rather than an arbitrary wildcard)."""
+    result = ResponseClassifier().classify(
+        "The account associated with lilyroseshaw@gmail.com has been deactivated."
+    )
+    assert result.status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert result.status != DeletionStatus.COMPLETED
+
+
+def test_unrelated_account_and_closed_mentions_do_not_false_positive():
+    """The widened reverse-direction pattern must NOT turn into a generic
+    'account' ... 'closed' fuzzy match - unrelated sentences that merely
+    contain both words must still fail closed to UNKNOWN_RESPONSE."""
+    texts = [
+        "We understand your concerns about your account. Separately, our "
+        "office will be closed for the holidays.",
+        "Your account is in good standing. Note that support tickets are "
+        "typically closed within 48 hours.",
+        "Thanks for your account inquiry - by the way, applications for "
+        "this program closed last week.",
+    ]
+    for text in texts:
+        result = ResponseClassifier().classify(text)
+        assert result.status != DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED, f"false positive for {text!r}"
+        assert result.status != DeletionStatus.COMPLETED
+
+
 # --- Pass 2: LLM-assisted, with guardrails ---
 
 def _mock_llm(payload: dict):

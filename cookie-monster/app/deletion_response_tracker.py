@@ -70,7 +70,11 @@ _EVENT_TYPE_FOR_STATUS = {
     DeletionStatus.COMPLETED: EventType.COMPLETION_CONFIRMED,
     DeletionStatus.REJECTED: EventType.REQUEST_REJECTED,
     DeletionStatus.SUBMITTED: EventType.COMPANY_ACKNOWLEDGED,
-    DeletionStatus.UNKNOWN_RESPONSE: EventType.COMPANY_ACKNOWLEDGED,
+    # Deliberately NOT COMPANY_ACKNOWLEDGED - UNKNOWN_RESPONSE means the
+    # classifier could not confidently place the reply into any category,
+    # so the audit event must not assert the company acknowledged
+    # anything. See EventType.UNCLASSIFIED_REPLY_RECEIVED's own comment.
+    DeletionStatus.UNKNOWN_RESPONSE: EventType.UNCLASSIFIED_REPLY_RECEIVED,
     DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED: EventType.ACCOUNT_CLOSED_DATA_UNVERIFIED,
 }
 

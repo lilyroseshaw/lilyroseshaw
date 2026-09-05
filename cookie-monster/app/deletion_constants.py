@@ -213,6 +213,15 @@ class EventType:
     EMAIL_SENT = "EMAIL_SENT"
     PORTAL_OPENED = "PORTAL_OPENED"
     COMPANY_ACKNOWLEDGED = "COMPANY_ACKNOWLEDGED"
+    # A reply came in but the classifier could not confidently place it
+    # into any known category (response_classify.py's UNKNOWN_RESPONSE) -
+    # deliberately distinct from COMPANY_ACKNOWLEDGED, which asserts the
+    # company acknowledged the request. This asserts nothing about what
+    # the reply means; it only records that one arrived and needs review
+    # (see deletion_response_tracker.py's _EVENT_TYPE_FOR_STATUS and its
+    # reclassify_stale_unknown_response, which re-checks these later
+    # against an improved classifier).
+    UNCLASSIFIED_REPLY_RECEIVED = "UNCLASSIFIED_REPLY_RECEIVED"
     VERIFICATION_REQUESTED = "VERIFICATION_REQUESTED"
     ADDITIONAL_INFO_REQUESTED = "ADDITIONAL_INFO_REQUESTED"
     COMPLETION_CONFIRMED = "COMPLETION_CONFIRMED"
@@ -275,7 +284,7 @@ class EventType:
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
-        COMPANY_ACKNOWLEDGED, VERIFICATION_REQUESTED, ADDITIONAL_INFO_REQUESTED,
+        COMPANY_ACKNOWLEDGED, UNCLASSIFIED_REPLY_RECEIVED, VERIFICATION_REQUESTED, ADDITIONAL_INFO_REQUESTED,
         COMPLETION_CONFIRMED, USER_MARKED_COMPLETE, REQUEST_REJECTED, FAILED, RETRY,
         RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED, RESEARCH_DEFERRED,
         EXECUTION_STARTED, EXECUTION_INTERRUPTED, MAIL_REPLY_SENT,

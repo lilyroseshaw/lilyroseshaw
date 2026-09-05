@@ -32,6 +32,17 @@ COMPLETED_PATTERNS = [
     r"deletion (is|has been) complete",
     r"account (has been|was) (permanently )?closed and (your )?(data|information) (deleted|removed)",
     r"we confirm that your data has been deleted",
+    # Forward-order counterpart to the pattern directly above: a closure
+    # verb, then "account", then an explicit "deleted your ... data" claim
+    # later in the same sentence/clause (e.g. "we closed your account and
+    # deleted your personal information"). Anchored to an actual closure
+    # verb immediately before "account" specifically so this can't fire on
+    # a bare "deleted your information" appearing with no closure context
+    # at all (which would also match awkward negations like "we have not
+    # deleted your information") - this only ever catches the same
+    # explicit compound claim COMPLETED already recognizes in passive
+    # voice one line up.
+    r"(deactivat(ed|ing)|clos(ed|ing)|terminat(ed|ing)|cancell?(ed|ing))\b.{0,60}\baccount\b.{0,40}\bdeleted (your )?(personal )?(information|data)",
 ]
 
 REJECTED_PATTERNS = [
@@ -57,12 +68,27 @@ REJECTED_PATTERNS = [
 # stronger claim (e.g. "account closed and your data deleted") still
 # resolves to COMPLETED first - this category only ever catches the
 # account-only case COMPLETED_PATTERNS deliberately doesn't.
+#
+# The last (reverse-order, "account ... verb") pattern is deliberately
+# NOT a wide character-count gap like the four "verb ... account"
+# patterns above - a real company reply (Goop Kitchen) needed
+# "the account associated with <email> has been deactivated" to match,
+# and an email address alone can run past any reasonably tight char
+# budget while a truly unrelated "account ... closed" pairing (e.g. "your
+# account is fine; separately, our office was closed for the holidday")
+# can easily fall inside a loose one. So this only tolerates two named,
+# narrow shapes glued directly onto "account": an optional "associated
+# with <token>" clause (the one real shape that needs to span a long
+# token) and an optional short passive auxiliary ("has been"/"was"/
+# "is"/"been") - not an arbitrary run of intervening text. Anything
+# else between "account" and the verb fails closed to UNKNOWN_RESPONSE,
+# same as before.
 ACCOUNT_CLOSED_DATA_UNVERIFIED_PATTERNS = [
     r"deactivat(ed|ing).{0,40}account",
     r"clos(ed|ing).{0,40}account",
     r"terminat(ed|ing).{0,40}account",
     r"cancell?(ed|ing).{0,40}account",
-    r"account.{0,40}(deactivated|closed|terminated|cancell?ed)",
+    r"account(?:\s+associated with\s+\S+)?(?:\s+(?:has been|was|is|been))?\s+(deactivated|closed|terminated|cancell?ed)",
 ]
 
 VERIFICATION_NEEDED_PATTERNS = [
@@ -139,6 +165,20 @@ class ResponseClassification:
     reasons: list[str] = field(default_factory=list)
 
 
+def _normalize_whitespace(text: str) -> str:
+    """Collapses any run of whitespace - including the mid-sentence line
+    wraps real email clients routinely insert (a real Goop Kitchen reply
+    split "...Insider" and "account associated with..." across a hard
+    line break) - into a single space. Python's `.` does not match `\\n`
+    by default, so a gap pattern like `deactivat(ed|ing).{0,40}account`
+    silently fails to match its own target phrase whenever the wrap
+    happens to land inside that gap - not a wording problem, a plain-text
+    formatting artifact the classifier must not be sensitive to. Applied
+    once, before every pattern in _PATTERN_ORDER, so this fixes the same
+    latent gap for all of them, not just the account-closure category."""
+    return re.sub(r"\s+", " ", text)
+
+
 def _find_match(text_lower: str, patterns: list[str]) -> str | None:
     for pattern in patterns:
         if re.search(pattern, text_lower):
@@ -173,18 +213,23 @@ class ResponseClassifier:
         return heuristic
 
     def _classify_heuristic(self, message_text: str) -> ResponseClassification:
-        text_lower = message_text.lower()
+        # Matching AND quoting both run against the same normalized text
+        # (see _normalize_whitespace's docstring) so a match's position is
+        # always valid for slicing the text _quote_around uses - never mix
+        # a match found in normalized text with offsets into the raw one.
+        normalized = _normalize_whitespace(message_text)
+        text_lower = normalized.lower()
         for status, patterns in _PATTERN_ORDER:
             match = _find_match(text_lower, patterns)
             if match:
                 return ResponseClassification(
                     status=status, confidence="high",
-                    quote=_quote_around(message_text, match),
+                    quote=_quote_around(normalized, match),
                     reasons=[f"matched /{match}/"],
                 )
         return ResponseClassification(
             status=DeletionStatus.UNKNOWN_RESPONSE, confidence="low",
-            quote=message_text.strip()[:MAX_QUOTE_LEN], reasons=["no known pattern matched"],
+            quote=normalized.strip()[:MAX_QUOTE_LEN], reasons=["no known pattern matched"],
         )
 
     def _classify_with_llm(self, message_text: str) -> ResponseClassification | None:
