@@ -78,6 +78,20 @@ _EVENT_TYPE_FOR_STATUS = {
     DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED: EventType.ACCOUNT_CLOSED_DATA_UNVERIFIED,
 }
 
+# check_company_response's return value - lets callers (the manual
+# "Check for reply" button, the background batch job) distinguish what
+# actually happened instead of inferring it from whether the dedup cursor
+# moved. Cursor movement alone conflates two very different events: a
+# genuinely new company-authored message arriving, versus correcting an
+# already-seen message's OLD classification with today's improved
+# classifier (which never moves the cursor - see
+# reclassify_stale_unknown_response). Company-agnostic: these three
+# outcomes are the only ones the function can ever produce, for any
+# company.
+CHECK_RESULT_NEW_MESSAGE = "new_message"    # a new company-authored message was found and classified
+CHECK_RESULT_RECLASSIFIED = "reclassified"  # no new message, but stale persisted evidence was reclassified
+CHECK_RESULT_NO_CHANGE = "no_change"        # nothing new, nothing to reclassify
+
 
 # --- Body extraction (transient - never persisted) ---
 
@@ -267,9 +281,13 @@ def get_companies_due_for_check(db: Session, limit: int | None = None) -> list[C
 
 def check_company_response(
     db: Session, company: Company, creds: Credentials, gmail_address: str, classifier: ResponseClassifier
-) -> None:
+) -> str:
     """Checks ONE company's tracked thread for new company replies. Commits
-    its own changes. Never raises - any failure is caught and recorded."""
+    its own changes. Never raises - any failure is caught and recorded.
+    Returns one of CHECK_RESULT_NEW_MESSAGE / CHECK_RESULT_RECLASSIFIED /
+    CHECK_RESULT_NO_CHANGE (see their definitions above) - callers that
+    only care about failures (the pre-existing before/after failure-count
+    comparison) can ignore the return value entirely."""
     now = datetime.datetime.utcnow()
     company.deletion_response_checked_at = now
 
@@ -299,12 +317,12 @@ def check_company_response(
                 evidence={"http_status": status_code, "error": str(exc)[:200]},
             )
         db.commit()
-        return
+        return CHECK_RESULT_NO_CHANGE
     except Exception as exc:  # noqa: BLE001 - network errors, etc. - always transient, never overwrite status
         company.deletion_response_check_failures += 1
         record_event(db, company.id, EventType.RESPONSE_CHECK_FAILED, evidence={"error": str(exc)[:200]})
         db.commit()
-        return
+        return CHECK_RESULT_NO_CHANGE
 
     # Talking to Gmail succeeded - reset the failure streak regardless of
     # whether there's anything new to classify.
@@ -362,8 +380,22 @@ def check_company_response(
                 "email' / 'Use this email instead' on the dashboard to point tracking at the right one.",
                 company.id, company.deletion_thread_id,
             )
+        # No new company-authored content in the live thread - but if the
+        # company is STILL sitting at UNKNOWN_RESPONSE, today's classifier
+        # may now understand the reply it already persisted better than
+        # the classifier that originally examined it did (a real example:
+        # a deterministic pattern gap gets fixed). This is exactly what
+        # reclassify_stale_unknown_response exists for - re-running the
+        # CURRENT classifier against the already-stored MailMessage body,
+        # never a new Gmail read, never a resend, never able to run twice
+        # in a row (its own idempotency guard requires deletion_status to
+        # still be UNKNOWN_RESPONSE). Company-agnostic: keyed purely off
+        # deletion_status, nothing about who the company is.
+        reclassified = False
+        if company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE:
+            reclassified = reclassify_stale_unknown_response(db, company, classifier)
         db.commit()
-        return
+        return CHECK_RESULT_RECLASSIFIED if reclassified else CHECK_RESULT_NO_CHANGE
 
     last_classification = None
     last_message_body = ""
@@ -430,6 +462,7 @@ def check_company_response(
         chase_engine.on_reply_classified(company, last_classification.status, last_message_body, last_message_occurred_at)
 
     db.commit()
+    return CHECK_RESULT_NEW_MESSAGE
 
 
 def process_response_checks(

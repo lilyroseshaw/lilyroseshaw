@@ -26,7 +26,11 @@ from app.deletion_events import record_event
 from app.deletion_queue import start_background_worker
 from app.deletion_research import build_default_provider
 from app.deletion_resolver import backfill_all_companies, recover_stuck_method_lookup, resolve_deletion_method
-from app.deletion_response_tracker import check_company_response
+from app.deletion_response_tracker import (
+    CHECK_RESULT_NEW_MESSAGE,
+    CHECK_RESULT_RECLASSIFIED,
+    check_company_response,
+)
 from app.gmail_scan import scan_inbox
 from app.mail import MailSendError, MailState, ReplyKind
 from app.models import Company, DeletionEvent, DeletionRecipe, MailMessage
@@ -650,6 +654,18 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
             check_message += " No action needed — Baker's Dozen is tracking this."
         elif check_status:
             check_message += " Action needed — see below."
+    elif check_result == "reclassified":
+        # Distinct from "new_response" on purpose - no new Gmail message
+        # arrived this time. An OLDER reply, already seen and already
+        # persisted, was re-examined with today's improved deterministic
+        # rules and understood better than it was originally - see
+        # reclassify_stale_unknown_response. Saying "New reply" here would
+        # be inaccurate: nothing new showed up in the mailbox.
+        check_message = "Earlier reply reinterpreted. Baker's Dozen updated the status."
+        if check_status and check_status not in ("VERIFICATION_NEEDED", "MORE_INFO_REQUIRED"):
+            check_message += " No action needed — Baker's Dozen is tracking this."
+        elif check_status:
+            check_message += " Action needed — see below."
     elif check_result == "no_new_response":
         check_message = "No new reply yet — checked just now."
     elif check_result == "check_failed":
@@ -816,10 +832,11 @@ def check_company_response_now(company_id: int):
     Redirects back to the SAME company's card (query param + URL fragment)
     with a short result summary, instead of dumping the user at the top of
     a long dashboard with no feedback - see _dashboard_context's
-    'checked'/'check_result' handling. The summary is derived purely from
-    comparing the company's own before/after state (did the dedup marker
-    move, did the failure counter increment) - it never changes anything
-    itself just to have something to show."""
+    'checked'/'check_result' handling. The summary is derived from
+    check_company_response's own explicit result (a genuinely new
+    company-authored message vs. a reclassification of already-persisted
+    evidence vs. no change) plus a before/after failure-count comparison -
+    it never changes anything itself just to have something to show."""
     db = get_session()
     try:
         company = db.get(Company, company_id)
@@ -834,18 +851,19 @@ def check_company_response_now(company_id: int):
         if creds is None or gmail_address is None:
             raise HTTPException(status_code=400, detail="Gmail is not connected")
 
-        previous_last_response_id = company.deletion_last_response_message_id
         previous_failures = company.deletion_response_check_failures
         previous_status = company.deletion_status
 
-        check_company_response(db, company, creds, gmail_address, _response_classifier)
+        check_outcome = check_company_response(db, company, creds, gmail_address, _response_classifier)
 
         if company.deletion_response_check_failures > previous_failures or (
             company.deletion_status == DeletionStatus.FAILED and previous_status != DeletionStatus.FAILED
         ):
             result = "check_failed"
-        elif company.deletion_last_response_message_id != previous_last_response_id:
+        elif check_outcome == CHECK_RESULT_NEW_MESSAGE:
             result = "new_response"
+        elif check_outcome == CHECK_RESULT_RECLASSIFIED:
+            result = "reclassified"
         else:
             result = "no_new_response"
         status_after = company.deletion_status

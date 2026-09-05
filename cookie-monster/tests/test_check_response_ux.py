@@ -153,3 +153,51 @@ def _grant_and_company(db) -> Company:
     company = _company(db)
     _grant_readonly_scope(db)
     return company
+
+
+def test_reclassified_shown_distinctly_from_new_response(tmp_path, monkeypatch):
+    """No new Gmail message arrives this time - the same already-known
+    reply is re-fetched (never a broader search). But the company's
+    already-persisted UNKNOWN_RESPONSE classification of that reply gets
+    reclassified by today's improved deterministic rules. The UI must say
+    so distinctly - never claim "New reply" for content that never
+    actually showed up during THIS check."""
+    from unittest.mock import MagicMock, patch
+
+    from fastapi.testclient import TestClient
+
+    from app import mail
+    from app.main import app
+    from app.response_classify import ResponseClassification
+
+    db = _client_db(tmp_path, monkeypatch)
+    company = _company(db, deletion_status=DeletionStatus.UNKNOWN_RESPONSE)
+    _grant_readonly_scope(db)
+
+    stale_text = "We have deactivated your account as requested."
+    old_message = _msg("m2", stale_text, "privacy@goopkitchen.com", 2000)
+    old_classification = ResponseClassification(
+        status=DeletionStatus.UNKNOWN_RESPONSE, confidence="low",
+        quote=stale_text[:200], reasons=["no known pattern matched"],
+    )
+    mail.record_inbound_mail_message(db, company, old_message, stale_text, old_classification)
+    company.deletion_last_response_message_id = "m2"
+    db.commit()
+
+    client = TestClient(app, base_url="http://localhost:8000")
+    with patch("app.google_oauth.load_credentials", return_value=MagicMock()), \
+         patch("app.google_oauth.fetch_thread_messages", return_value=[old_message]):
+        resp = client.post(f"/api/companies/{company.id}/deletion/check-response", follow_redirects=False)
+
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert "check_result=reclassified" in location
+    assert "check_result=new_response" not in location
+
+    dashboard_resp = client.get(location.split("#")[0])
+    html = dashboard_resp.text
+    assert "Earlier reply reinterpreted" in html
+    assert "New reply from" not in html
+
+    db.refresh(company)
+    assert company.deletion_status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED

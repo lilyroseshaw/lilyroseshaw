@@ -12,6 +12,9 @@ from app.db import Base
 from app.deletion_constants import DeletionStatus, EventType, WaitingOn
 from app.deletion_events import record_event
 from app.deletion_response_tracker import (
+    CHECK_RESULT_NEW_MESSAGE,
+    CHECK_RESULT_NO_CHANGE,
+    CHECK_RESULT_RECLASSIFIED,
     _find_legacy_acknowledgment_event,
     check_company_response,
     extract_body_text,
@@ -1242,3 +1245,252 @@ def test_real_goop_live_reply_classifies_and_schedules_correct_followup(db):
     body = mock_send.call_args.args[3]
     assert "personal data" in body.lower() or "personal information" in body.lower()
     assert "retained" in body.lower()
+
+
+# =========================================================================
+# Wiring reclassify_stale_unknown_response into the LIVE check_company_response
+# path (a real gap a live check surfaced: a company's persisted
+# UNKNOWN_RESPONSE MailMessage is never re-examined by a plain "Check for
+# reply" click, since the message is already behind the dedup cursor and
+# the manual button only ever looked for genuinely NEW content). Every
+# test below uses a fabricated company (Widget Co, via _company()) and
+# fabricated wording - MALK/Goop only ever appear as their own separate,
+# already-existing regression fixtures elsewhere in this file. Nothing
+# here keys off a company name, domain, or message id.
+# =========================================================================
+
+def _seed_stale_unknown_response_for(db, company, gmail_message_id, text, occurred_at=None):
+    """Same shape as _seed_stale_unknown_response, but for an arbitrary
+    already-created company and arbitrary text - lets these tests seed a
+    persisted-but-outdated UNKNOWN_RESPONSE classification for any
+    fabricated wording, not just the MALK fixture text."""
+    occurred_at = occurred_at or datetime.datetime(2024, 1, 1)
+    old_classification = ResponseClassification(
+        status=DeletionStatus.UNKNOWN_RESPONSE, confidence="low", quote=text[:200], reasons=["no known pattern matched"],
+    )
+    message = _msg(gmail_message_id, text, "privacy@widgetco.com", _epoch_ms(occurred_at))
+    mail.record_inbound_mail_message(db, company, message, text, old_classification)
+    company.deletion_last_response_message_id = gmail_message_id
+    company.deletion_status = DeletionStatus.UNKNOWN_RESPONSE
+    company.deletion_evidence = {
+        "type": "gmail_reply", "quote": text[:200], "confidence": "low",
+        "classified_at": datetime.datetime.utcnow().isoformat(),
+    }
+    db.commit()
+    return message
+
+
+def test_manual_check_reclassifies_persisted_unknown_response_with_no_new_gmail_content(db):
+    """A plain 'Check for reply' with NOTHING new in the thread must still
+    re-examine an already-persisted UNKNOWN_RESPONSE using today's
+    classifier, entirely from the stored MailMessage.body_excerpt - the
+    live Gmail fetch here returns ONLY the same already-known message,
+    proving no broader read is needed or used."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    old_message = _seed_stale_unknown_response_for(
+        db, company, "m2", "We have deactivated your account as requested.",
+    )
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 1
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message]):
+        outcome = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert outcome == CHECK_RESULT_RECLASSIFIED
+    assert company.deletion_status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert company.deletion_last_response_message_id == "m2"  # cursor unchanged - no new message
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == 1  # no duplicate row
+    event = (
+        db.query(DeletionEvent)
+        .filter(DeletionEvent.company_id == company.id, DeletionEvent.event_type == EventType.ACCOUNT_CLOSED_DATA_UNVERIFIED)
+        .one()
+    )
+    assert event.evidence["reclassified"] is True
+
+
+def test_manual_check_with_no_new_message_and_no_improvement_is_no_change(db):
+    """Genuinely ambiguous wording that STILL doesn't match anything, even
+    under the current classifier, must fail closed - CHECK_RESULT_NO_CHANGE,
+    never CHECK_RESULT_RECLASSIFIED for a non-improvement."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    old_message = _seed_stale_unknown_response_for(db, company, "m2", "Thanks so much, appreciate it!")
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message]):
+        outcome = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert outcome == CHECK_RESULT_NO_CHANGE
+    assert company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE
+
+
+def test_repeated_reconciliation_after_success_is_idempotent(db):
+    """Once reclassified, a second identical check must be a pure no-op -
+    same status, same event count, same MailMessage count, reported as
+    CHECK_RESULT_NO_CHANGE (not reclassified again)."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    old_message = _seed_stale_unknown_response_for(
+        db, company, "m2", "We have deactivated your account as requested.",
+    )
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message]):
+        first = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+    assert first == CHECK_RESULT_RECLASSIFIED
+    events_after_first = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count()
+    mail_after_first = db.query(MailMessage).filter(MailMessage.company_id == company.id).count()
+    status_after_first = company.deletion_status
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message]):
+        second = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert second == CHECK_RESULT_NO_CHANGE
+    assert company.deletion_status == status_after_first
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == events_after_first
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == mail_after_first
+
+
+def test_own_outbound_followup_does_not_count_as_new_company_reply(db):
+    """Cookie Monster's own already-sent chase follow-up living in the
+    same thread must never be mistaken for a new company reply - it must
+    be filtered out exactly like any other own-sent message, leaving the
+    persisted UNKNOWN_RESPONSE eligible for reclassification instead."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    old_message = _seed_stale_unknown_response_for(
+        db, company, "m2", "We have deactivated your account as requested.",
+    )
+    own_followup = _msg(
+        "own-followup-1", "I'm following up on my data deletion request...", "me@gmail.com", 3000, sent=True,
+    )
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message, own_followup]):
+        outcome = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert outcome != CHECK_RESULT_NEW_MESSAGE
+    assert outcome == CHECK_RESULT_RECLASSIFIED
+    assert company.deletion_status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert company.deletion_last_response_message_id == "m2"  # never advanced to the own message
+
+
+# --- Chase-timer semantics: a reclassification of OLD evidence must never
+# manufacture a fresh grace period the company never earned, and a
+# genuinely NEW but ambiguous/generic live reply must never postpone an
+# already-active chase either - see chase_engine.on_reply_classified. ---
+
+def test_reclassification_to_account_closed_does_not_grant_fresh_grace_period(db):
+    """The exact scenario a live check surfaced: a company already
+    WAITING_ON=COMPANY with an active follow-up schedule (one generic
+    catch-up follow-up already sent) gets its stale UNKNOWN_RESPONSE
+    reclassified to ACCOUNT_CLOSED_DATA_UNVERIFIED. waiting_on stays
+    COMPANY, but next_followup_at must be completely UNCHANGED - never
+    reset to a fresh 24h window merely because old evidence was
+    reinterpreted."""
+    already_scheduled = datetime.datetime(2024, 6, 1, 12, 0, 0)
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", waiting_on=WaitingOn.COMPANY, next_followup_at=already_scheduled,
+    )
+    old_message = _seed_stale_unknown_response_for(
+        db, company, "m2", "We have deactivated your account as requested.",
+    )
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message]):
+        outcome = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert outcome == CHECK_RESULT_RECLASSIFIED
+    assert company.deletion_status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert company.next_followup_at == already_scheduled  # completely unchanged - no fresh grace period
+
+
+def _seed_processed_inbound(db, company, gmail_message_id, text, occurred_at=None):
+    """A message the MODERN pipeline already fully processed - a real
+    MailMessage row exists for it, exactly like check_company_response
+    itself always creates for every message it examines. Distinct from
+    _seed_stale_unknown_response_for's LEGACY shape (zero MailMessage
+    rows) - this is what makes these tests exercise the ordinary
+    'genuinely new message arrives next' path, not legacy-cursor
+    recovery."""
+    occurred_at = occurred_at or datetime.datetime(2024, 1, 1)
+    db.add(MailMessage(
+        company_id=company.id, direction="inbound", gmail_message_id=gmail_message_id,
+        gmail_thread_id=company.deletion_thread_id, occurred_at=occurred_at,
+        from_display="privacy@widgetco.com", subject="Re: request", body_excerpt=text,
+    ))
+    db.commit()
+
+
+def test_ambiguous_new_reply_does_not_postpone_already_scheduled_chase(db):
+    """A genuinely NEW (not reclassified) but ambiguous live reply must
+    never push an already-active chase schedule further out - same rule
+    as a reclassification, applied to the live path."""
+    already_scheduled = datetime.datetime(2024, 6, 1, 12, 0, 0)
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", waiting_on=WaitingOn.COMPANY, next_followup_at=already_scheduled,
+        deletion_last_response_message_id="m1",
+    )
+    msg_prior = _msg("m1", "We received your request.", "privacy@widgetco.com", 1000)
+    _seed_processed_inbound(db, company, "m1", "We received your request.")
+    new_ambiguous = _msg("m2", "Thanks so much, appreciate it!", "privacy@widgetco.com", 2000)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[msg_prior, new_ambiguous]):
+        outcome = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert outcome == CHECK_RESULT_NEW_MESSAGE
+    assert company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert company.next_followup_at == already_scheduled  # unchanged - ambiguous content never postpones
+
+
+def test_generic_acknowledgment_does_not_postpone_already_scheduled_chase(db):
+    already_scheduled = datetime.datetime(2024, 6, 1, 12, 0, 0)
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", waiting_on=WaitingOn.COMPANY, next_followup_at=already_scheduled,
+        deletion_last_response_message_id="m1",
+    )
+    msg_prior = _msg("m1", "We received your request.", "privacy@widgetco.com", 1000)
+    _seed_processed_inbound(db, company, "m1", "We received your request.")
+    generic_ack = _msg("m2", "We are currently reviewing your request.", "privacy@widgetco.com", 2000)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[msg_prior, generic_ack]):
+        outcome = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert outcome == CHECK_RESULT_NEW_MESSAGE
+    assert company.deletion_status == DeletionStatus.IN_PROGRESS
+    assert company.next_followup_at == already_scheduled  # unchanged
+
+
+def test_user_required_action_pauses_schedule_via_full_pipeline(db):
+    already_scheduled = datetime.datetime(2024, 6, 1, 12, 0, 0)
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", waiting_on=WaitingOn.COMPANY, next_followup_at=already_scheduled,
+        deletion_last_response_message_id="m1",
+    )
+    msg_prior = _msg("m1", "We received your request.", "privacy@widgetco.com", 1000)
+    _seed_processed_inbound(db, company, "m1", "We received your request.")
+    verification = _msg("m2", "Please verify your identity to continue.", "privacy@widgetco.com", 2000)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[msg_prior, verification]):
+        outcome = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert outcome == CHECK_RESULT_NEW_MESSAGE
+    assert company.deletion_status == DeletionStatus.VERIFICATION_NEEDED
+    assert company.waiting_on == WaitingOn.USER
+    assert company.next_followup_at is None  # paused - the user must act first
+
+
+def test_ambiguous_reply_does_not_resume_chase_after_user_pause(db):
+    """A generic/ambiguous reply arriving while the case is paused waiting
+    on the USER must never silently resume automatic chasing on its own -
+    only a materially specific classification (e.g.
+    ACCOUNT_CLOSED_DATA_UNVERIFIED) may do that. See
+    chase_engine._SCHEDULE_SIGNIFICANT_FOR_RESUME."""
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", waiting_on=WaitingOn.USER, next_followup_at=None,
+        deletion_last_response_message_id="m1",
+    )
+    msg_prior = _msg("m1", "Please verify your identity.", "privacy@widgetco.com", 1000)
+    _seed_processed_inbound(db, company, "m1", "Please verify your identity.")
+    ambiguous_followup = _msg("m2", "Thanks so much, appreciate it!", "privacy@widgetco.com", 2000)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[msg_prior, ambiguous_followup]):
+        outcome = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert outcome == CHECK_RESULT_NEW_MESSAGE
+    assert company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE
+    assert company.next_followup_at is None  # still unscheduled - generic content never resumed it

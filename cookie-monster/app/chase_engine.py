@@ -114,23 +114,61 @@ def on_request_sent(company: Company, sent_at: datetime.datetime) -> None:
     company.followups_paused = False
 
 
+# Classifications specific/evidence-backed enough that RE-ENTERING
+# COMPANY's court from a deliberate USER/ESCALATION_NEEDED pause is
+# justified on their say-so alone. Deliberately narrow: IN_PROGRESS,
+# SUBMITTED, and a plain (no-signal) UNKNOWN_RESPONSE are generic/
+# ambiguous by definition (see response_classify.py and derive_waiting_on
+# above) and must never, by themselves, decide "the user's pending action
+# no longer matters, automatic chasing resumes." A company confirming
+# something concrete (e.g. ACCOUNT_CLOSED_DATA_UNVERIFIED) is a genuinely
+# new, specific fact worth resuming automation for.
+_SCHEDULE_SIGNIFICANT_FOR_RESUME = {DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED}
+
+
 def on_reply_classified(company: Company, classification_status: str, body_text: str, occurred_at: datetime.datetime) -> None:
-    """Called for every newly-classified inbound message, alongside (not
-    instead of) the existing DeletionStatus update in
-    deletion_response_tracker.py. A generic company acknowledgment that
-    arrives while already COMPANY with a follow-up already scheduled must
-    NEVER push next_followup_at further out - only a fresh entry into
-    COMPANY's court (from USER/ESCALATION_NEEDED/unscheduled) gets a new
-    24h window."""
+    """Called for every newly-classified inbound message - including a
+    RECLASSIFICATION of already-persisted evidence (see
+    reclassify_stale_unknown_response in deletion_response_tracker.py),
+    alongside (not instead of) the existing DeletionStatus update there.
+
+    Three distinct cases, deliberately NOT collapsed into one "did
+    waiting_on change" check:
+    1. Already actively waiting on the company (previous_waiting_on ==
+       COMPANY) with a follow-up already scheduled - a generic
+       acknowledgment, an ambiguous reply, or reclassifying old evidence
+       into a still-COMPANY-directed status must NEVER push
+       next_followup_at further out. At most one active window per case
+       while the ball stays in the company's court - this is what stops a
+       correction to old evidence from manufacturing a fresh 24h grace
+       period the company never earned.
+    2. Re-entering COMPANY's court from a deliberate pause (USER or
+       ESCALATION_NEEDED) - only a classification in
+       _SCHEDULE_SIGNIFICANT_FOR_RESUME may resume automatic chasing.
+       Generic/ambiguous content arriving while the user (or a human,
+       post-denial) was supposed to act must not silently hand control
+       back to automation.
+    3. Never tracked before (previous_waiting_on is None - a brand new
+       case, or one that predates this chase engine entirely) - any
+       classification establishes a baseline window; there is no existing
+       expectation to protect yet."""
     if not _is_tracked_email_case(company):
         return
     previous_waiting_on = company.waiting_on
     new_waiting_on = derive_waiting_on(classification_status, body_text)
     company.waiting_on = new_waiting_on
     if new_waiting_on == WaitingOn.COMPANY:
-        if previous_waiting_on != WaitingOn.COMPANY or company.next_followup_at is None:
+        if previous_waiting_on == WaitingOn.COMPANY:
+            if company.next_followup_at is None:
+                company.next_followup_at = occurred_at + _followup_interval()
+            # else: already scheduled - unchanged, regardless of how
+            # specific this classification is. See case 1 above.
+        elif previous_waiting_on in (WaitingOn.USER, WaitingOn.ESCALATION_NEEDED):
+            if classification_status in _SCHEDULE_SIGNIFICANT_FOR_RESUME:
+                company.next_followup_at = occurred_at + _followup_interval()
+            # else: leave unscheduled - see case 2 above.
+        else:
             company.next_followup_at = occurred_at + _followup_interval()
-        # else: unchanged on purpose - see module docstring.
     else:
         company.next_followup_at = None
 
