@@ -305,6 +305,154 @@ def test_unrelated_account_and_closed_mentions_do_not_false_positive():
         assert result.status != DeletionStatus.COMPLETED
 
 
+# =========================================================================
+# ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED - a stronger claim than account
+# closure (the company says the account/account record/profile/membership
+# record was DELETED, not merely closed), but still not COMPLETED: it
+# does not confirm the user's personal information more broadly (which
+# may extend beyond the account record) was deleted. Surfaced by a real
+# Goop Kitchen reply (kept below only as a regression fixture - no
+# production logic anywhere depends on this being Goop specifically).
+# =========================================================================
+
+GOOP_ACCOUNT_RECORD_DELETED_TEXT = (
+    "We can confirm that the account associated with this email address, "
+    "lilyroseshaw@gmail.com, and its details have already been deleted as requested."
+)
+
+
+def test_real_goop_account_record_deleted_reply_is_not_completed():
+    result = ResponseClassifier().classify(GOOP_ACCOUNT_RECORD_DELETED_TEXT)
+    assert result.status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+    assert result.status != DeletionStatus.COMPLETED
+    assert result.status != DeletionStatus.UNKNOWN_RESPONSE
+
+
+def test_arbitrary_company_account_or_profile_or_membership_deleted_is_not_completed():
+    """Fabricated companies/wording, proving generalization beyond the
+    real Goop fixture above - account, profile, and membership record
+    deletion all land here, never COMPLETED, never UNKNOWN_RESPONSE."""
+    variants = [
+        "We have deleted your account.",
+        "We deleted your account and its details.",
+        "Your account has been deleted.",
+        "Your account and its details have been deleted.",
+        "Your profile has been deleted.",
+        "Your membership was deleted.",
+        "We deleted your membership record.",
+        "The account associated with this email and its details have been deleted.",
+        "This confirms that the account associated with user@example.com has been deleted.",
+    ]
+    for text in variants:
+        result = ResponseClassifier().classify(text)
+        assert result.status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, f"failed for {text!r}"
+        assert result.status != DeletionStatus.COMPLETED, f"false COMPLETED for {text!r}"
+
+
+def test_account_record_deleted_wins_over_ambiguous_but_not_over_completed():
+    """Precedence: an explicit compound claim naming BOTH account closure/
+    deletion AND personal information still resolves to COMPLETED
+    (checked first in _PATTERN_ORDER); a bare account/record-only claim
+    resolves to ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED; a merely ambiguous
+    deletion mention resolves to UNKNOWN_RESPONSE."""
+    assert ResponseClassifier().classify(
+        "We deleted your account and all personal information associated with you."
+    ).status == DeletionStatus.COMPLETED
+    assert ResponseClassifier().classify(
+        "We deleted your account and its details."
+    ).status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+    assert ResponseClassifier().classify(
+        "Some ambiguous message involving deletion of unspecified stuff."
+    ).status == DeletionStatus.UNKNOWN_RESPONSE
+
+
+def test_account_deletion_distinct_from_account_closure():
+    """'Deleted' (ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED) and 'closed'/
+    'deactivated' (ACCOUNT_CLOSED_DATA_UNVERIFIED) must never be
+    conflated - they are different claims with different follow-up
+    templates (see chase_engine.py)."""
+    assert ResponseClassifier().classify(
+        "We closed your account."
+    ).status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert ResponseClassifier().classify(
+        "We have deactivated your account."
+    ).status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+    assert ResponseClassifier().classify(
+        "We deleted your account."
+    ).status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+
+
+def test_unrelated_account_and_deleted_mentions_do_not_false_positive():
+    """Widened gap-matching for the reverse-order pattern must not turn
+    into a generic 'account' ... 'deleted' fuzzy match across unrelated
+    clauses in the same sentence."""
+    texts = [
+        "Your request has been deleted.",
+        "The ticket has been deleted.",
+        "Your account is fine. Separately, an old cache entry unrelated to you was deleted last week.",
+    ]
+    for text in texts:
+        result = ResponseClassifier().classify(text)
+        assert result.status != DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, f"false positive for {text!r}"
+        assert result.status != DeletionStatus.COMPLETED
+
+
+# =========================================================================
+# COMPLETED false-positive audit. Two patterns here were dangerously
+# objectless (matching "X has been deleted"/"we deleted your X" for ANY
+# X, not just the user's personal information) until a real company
+# reply ("We can confirm that the account ... and its details have
+# already been deleted as requested.") prompted an audit of every
+# COMPLETED pattern. Every case below is fabricated wording, proving this
+# is a general classifier fix, not a Goop-specific patch.
+# =========================================================================
+
+def test_account_scoped_deletion_never_independently_completes():
+    """The exact false-positive class the audit found: 'X has been
+    deleted' / 'we deleted your X' where X is an account, profile,
+    membership, ticket, or request - none of these name the user's
+    personal information, so none may resolve to COMPLETED."""
+    texts = [
+        "Your account has been deleted.",
+        "Your account and its details have been deleted.",
+        "Your profile has been deleted.",
+        "Your membership was deleted.",
+        "The account associated with this email and its details have been deleted.",
+        "Your request has been deleted.",
+        "The ticket has been deleted.",
+        "We have deleted your account.",
+        "We deleted your account and its details.",
+    ]
+    for text in texts:
+        result = ResponseClassifier().classify(text)
+        assert result.status != DeletionStatus.COMPLETED, f"false COMPLETED for {text!r}"
+
+
+def test_explicit_personal_data_deletion_wording_still_completes():
+    """The audit's tightening must not have thrown out genuine,
+    explicit personal-data deletion claims - every shape COMPLETED is
+    supposed to recognize must still work."""
+    texts = [
+        "We have deleted your personal information.",
+        "Your personal data has been permanently deleted.",
+        "All personal information associated with you has been deleted.",
+        "We deleted all data we held about you.",
+    ]
+    for text in texts:
+        result = ResponseClassifier().classify(text)
+        assert result.status == DeletionStatus.COMPLETED, f"failed to classify COMPLETED for {text!r}"
+
+
+def test_account_deletion_plus_explicit_personal_data_resolves_completed():
+    """The strongest, most explicit evidence wins - a company confirming
+    BOTH account deletion AND personal-data deletion together (joined by
+    'and') is COMPLETED, not the weaker ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED."""
+    result = ResponseClassifier().classify(
+        "We deleted your account and all personal information associated with you."
+    )
+    assert result.status == DeletionStatus.COMPLETED
+
+
 # --- Pass 2: LLM-assisted, with guardrails ---
 
 def _mock_llm(payload: dict):

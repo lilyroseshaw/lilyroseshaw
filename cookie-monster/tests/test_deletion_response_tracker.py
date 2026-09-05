@@ -1494,3 +1494,142 @@ def test_ambiguous_reply_does_not_resume_chase_after_user_pause(db):
     assert outcome == CHECK_RESULT_NEW_MESSAGE
     assert company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE
     assert company.next_followup_at is None  # still unscheduled - generic content never resumed it
+
+
+# =========================================================================
+# ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED end-to-end: the real live gap -
+# a persisted UNKNOWN_RESPONSE reply (classified before this status/the
+# classifier fix existed) must be safely reclassifiable once the improved
+# classifier understands its evidence - via the SAME
+# reclassify_stale_unknown_response wiring already used for
+# ACCOUNT_CLOSED_DATA_UNVERIFIED, with the SAME chase-timer guarantees.
+# Fabricated company (Widget Co); the real Goop wording appears only as
+# one dedicated regression fixture below, never as production logic.
+# =========================================================================
+
+GOOP_ACCOUNT_RECORD_DELETED_TEXT = (
+    "We can confirm that the account associated with this email address, "
+    "lilyroseshaw@gmail.com, and its details have already been deleted as requested."
+)
+
+
+def test_manual_check_reclassifies_stale_unknown_response_to_account_record_deleted(db):
+    """The exact live scenario: a MailMessage already persisted with
+    classification_status=UNKNOWN_RESPONSE (because it predates this
+    round's classifier fix) gets reclassified, with no new Gmail content,
+    once the current classifier understands the evidence."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    old_message = _seed_stale_unknown_response_for(db, company, "m2", GOOP_ACCOUNT_RECORD_DELETED_TEXT)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message]):
+        outcome = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert outcome == CHECK_RESULT_RECLASSIFIED
+    assert company.deletion_status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+    assert company.deletion_status != DeletionStatus.COMPLETED
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert company.deletion_last_response_message_id == "m2"  # cursor unchanged - no new message
+    event = (
+        db.query(DeletionEvent)
+        .filter(DeletionEvent.company_id == company.id, DeletionEvent.event_type == EventType.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED)
+        .one()
+    )
+    assert event.evidence["reclassified"] is True
+
+
+def test_account_record_deleted_reclassification_does_not_grant_fresh_grace_period(db):
+    """Same guarantee as the ACCOUNT_CLOSED_DATA_UNVERIFIED case: a
+    company already WAITING_ON=COMPANY with an active follow-up schedule
+    (one generic catch-up follow-up already sent) gets its stale
+    UNKNOWN_RESPONSE reclassified to ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED.
+    waiting_on stays COMPANY, but next_followup_at must be completely
+    UNCHANGED - never reset to a fresh 24h window merely because old
+    evidence was reinterpreted."""
+    already_scheduled = datetime.datetime(2024, 6, 1, 12, 0, 0)
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", waiting_on=WaitingOn.COMPANY, next_followup_at=already_scheduled,
+    )
+    old_message = _seed_stale_unknown_response_for(db, company, "m2", GOOP_ACCOUNT_RECORD_DELETED_TEXT)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message]):
+        outcome = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert outcome == CHECK_RESULT_RECLASSIFIED
+    assert company.deletion_status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert company.next_followup_at == already_scheduled  # completely unchanged - no fresh grace period
+
+
+def test_account_record_deleted_reclassification_is_idempotent(db):
+    """Repeated checks after a successful reclassification must be pure
+    no-ops - same status, same event count, same MailMessage count."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    old_message = _seed_stale_unknown_response_for(db, company, "m2", GOOP_ACCOUNT_RECORD_DELETED_TEXT)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message]):
+        first = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+    assert first == CHECK_RESULT_RECLASSIFIED
+    events_after_first = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count()
+    mail_after_first = db.query(MailMessage).filter(MailMessage.company_id == company.id).count()
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message]):
+        second = check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    assert second == CHECK_RESULT_NO_CHANGE
+    assert company.deletion_status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == events_after_first
+    assert db.query(MailMessage).filter(MailMessage.company_id == company.id).count() == mail_after_first
+
+
+def test_account_record_deleted_reclassification_preserves_historical_events(db):
+    """Append-only guarantee: the OLD (wrong) UNKNOWN_RESPONSE-shaped
+    audit trail from before reclassification (event 114 in the real live
+    case) must remain fully intact - never rewritten, never deleted -
+    once the status is corrected. The historical event's own wrong quote/
+    evidence must be exactly as it was."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    original_event = record_event(
+        db, company.id, EventType.UNCLASSIFIED_REPLY_RECEIVED,
+        evidence={"quote": GOOP_ACCOUNT_RECORD_DELETED_TEXT[:200], "confidence": "low", "message_id": "m2"},
+    )
+    db.commit()
+    original_event_id = original_event.id
+    old_message = _seed_stale_unknown_response_for(db, company, "m2", GOOP_ACCOUNT_RECORD_DELETED_TEXT)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message]):
+        check_company_response(db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier())
+
+    still_there = db.get(DeletionEvent, original_event_id)
+    assert still_there is not None
+    assert still_there.event_type == EventType.UNCLASSIFIED_REPLY_RECEIVED  # never rewritten
+    assert still_there.evidence["quote"] == GOOP_ACCOUNT_RECORD_DELETED_TEXT[:200]
+    new_event = (
+        db.query(DeletionEvent)
+        .filter(DeletionEvent.company_id == company.id, DeletionEvent.event_type == EventType.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED)
+        .one()
+    )
+    assert new_event.id != original_event_id  # a NEW event, not a mutation of the old one
+
+
+def test_account_record_deleted_followup_asks_about_data_outside_account_record(db):
+    """The dedicated follow-up must thank the company for the account/
+    account-record deletion, clarify the request concerns personal
+    information more broadly, ask about information outside the account
+    record, and - if anything is retained - ask what/why/how long. It
+    must NEVER claim the company merely 'closed' or 'deactivated' the
+    account when it actually said 'deleted'."""
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        waiting_on=WaitingOn.COMPANY, next_followup_at=datetime.datetime(2020, 1, 1),
+    )
+    with patch("app.chase_engine._send_followup_email", return_value={"id": "sent-1", "threadId": "thread123"}) as mock_send:
+        sent = chase_engine.process_followups(db, creds=MagicMock(), gmail_address="me@gmail.com")
+    assert sent == 1
+    body = mock_send.call_args.args[3].lower()
+    assert "deleted" in body
+    assert "closed" not in body
+    assert "deactivat" not in body
+    assert "personal information" in body or "personal data" in body
+    assert "outside" in body
+    assert "retained" in body
+    assert "attempt" not in body  # internal counter never shown to the company

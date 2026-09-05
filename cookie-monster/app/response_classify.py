@@ -23,25 +23,73 @@ from app.deletion_constants import DeletionStatus
 
 MAX_QUOTE_LEN = 200
 
+# A gap-matching building block used by several patterns below to span a
+# variable amount of intervening text (an "associated with <email>"
+# clause, a compound "X and Y" object list, ...) WITHOUT ever drifting
+# into a separate, unrelated sentence. A literal `.` in a character class
+# would also block the dot inside an email domain like "gmail.com",
+# which is exactly the kind of token these gaps need to span - so this
+# instead excludes only a period immediately followed by whitespace or
+# end-of-string (a real sentence break), via a negative lookahead.
+_NOT_SENTENCE_BREAK = r"(?:(?!\.(?:\s|$))[^\n])"
+
+# A completion verdict is the one label that must never be wrong, so every
+# pattern below REQUIRES the deleted/removed OBJECT to be an explicit
+# personal-data phrase ("(personal) information/data", or a clear
+# synonym like "all data we hold about you"). This was NOT always true:
+# an audit prompted by a real company reply ("We can confirm that the
+# account ... and its details have already been deleted as requested")
+# found that two earlier patterns here - a bare "(has been|have been)
+# deleted/removed" and "we deleted your" with nothing required after
+# "your" - would happily match "Your account has been deleted.", "Your
+# profile has been deleted.", "The ticket has been deleted.", "We have
+# deleted your account.", or any other object entirely unrelated to the
+# user's personal data. Those two patterns are gone; every replacement
+# below names its object. See ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED_PATTERNS
+# below for the (deliberately separate, deliberately NOT completion)
+# status that now catches "account/profile/membership record deleted"
+# instead.
 COMPLETED_PATTERNS = [
-    r"(has been|have been) (permanently )?deleted",
-    r"(has been|have been) (permanently )?removed",
-    r"we (have )?(successfully )?deleted your",
-    r"we (have )?(successfully )?removed your",
-    r"your (personal )?(information|data) (has been|have been) (deleted|removed|erased)",
-    r"deletion (is|has been) complete",
+    # Passive voice, object required: "your personal information/data has
+    # been deleted", "all personal information associated with you has
+    # been deleted", "personal data has been permanently deleted", "the
+    # information we hold about you has been erased". Optional "all"/
+    # "your" prefix and an optional "associated with you"/"we hold/held/
+    # have about you" qualifier both still require the core object to be
+    # (personal) information/data - never a bare "has been deleted".
+    r"(all |your )?(personal )?(information|data)( associated with you| we (hold|held|have) (about|on) you)? (has been|have been) (permanently )?(deleted|removed|erased)",
+    # Active voice, object required after "your" (previously missing -
+    # this is what let "we deleted your account" through as COMPLETED).
+    r"we (have )?(successfully )?deleted (all )?your (personal )?(information|data)\b",
+    r"we (have )?(successfully )?removed (all )?your (personal )?(information|data)\b",
+    # Active voice, relative-clause object: "we deleted all data we held
+    # about you" - the object is described rather than named "your X".
+    r"we (have )?(successfully )?deleted all (data|information) we (hold|held|have) (about|on) you",
+    # A closure/deletion verb governing BOTH "account" (or equivalent) AND
+    # a personal-data object via "and" - e.g. "we deleted your account and
+    # all personal information associated with you". The second conjunct
+    # must still explicitly name "your"/"all (personal) information/data"
+    # - a bare "and some other information" (e.g. "we deleted an old test
+    # account and some unrelated cache information") does NOT qualify.
+    rf"delet(ed|ing){_NOT_SENTENCE_BREAK}{{0,15}}\b(account|profile|membership)\b{_NOT_SENTENCE_BREAK}{{0,10}}\band\b{_NOT_SENTENCE_BREAK}{{0,10}}(your (personal )?(information|data)|all (personal )?(information|data)( associated with you)?)\b",
+    # "Deletion is/has been complete" - safe as an objectless phrase ONLY
+    # because, unlike "X has been deleted", nothing else is named as the
+    # deleted object; still excluded when "account" is the stated subject
+    # of that deletion ("your account deletion is complete") since that
+    # narrows it back down to the same account-only claim as everything
+    # else in this file.
+    r"(?<!account )deletion (is|has been) complete",
     r"account (has been|was) (permanently )?closed and (your )?(data|information) (deleted|removed)",
     r"we confirm that your data has been deleted",
-    # Forward-order counterpart to the pattern directly above: a closure
-    # verb, then "account", then an explicit "deleted your ... data" claim
-    # later in the same sentence/clause (e.g. "we closed your account and
-    # deleted your personal information"). Anchored to an actual closure
-    # verb immediately before "account" specifically so this can't fire on
-    # a bare "deleted your information" appearing with no closure context
-    # at all (which would also match awkward negations like "we have not
-    # deleted your information") - this only ever catches the same
-    # explicit compound claim COMPLETED already recognizes in passive
-    # voice one line up.
+    # Forward-order: a closure verb, then "account", then an explicit
+    # "deleted your ... data" claim later in the same sentence/clause
+    # (e.g. "we closed your account and deleted your personal
+    # information"). Anchored to an actual closure verb immediately
+    # before "account" specifically so this can't fire on a bare "deleted
+    # your information" appearing with no closure context at all (which
+    # would also match awkward negations like "we have not deleted your
+    # information") - this only ever catches the same explicit compound
+    # claim COMPLETED already recognizes in passive voice above.
     r"(deactivat(ed|ing)|clos(ed|ing)|terminat(ed|ing)|cancell?(ed|ing))\b.{0,60}\baccount\b.{0,40}\bdeleted (your )?(personal )?(information|data)",
 ]
 
@@ -91,6 +139,26 @@ ACCOUNT_CLOSED_DATA_UNVERIFIED_PATTERNS = [
     r"account(?:\s+associated with\s+\S+)?(?:\s+(?:has been|was|is|been))?\s+(deactivated|closed|terminated|cancell?ed)",
 ]
 
+# A stronger claim than ACCOUNT_CLOSED_DATA_UNVERIFIED: the company says
+# the account/account record/profile/membership record was DELETED (not
+# merely closed/deactivated), but - per COMPLETED_PATTERNS's own
+# docstring above - that alone is never enough to confirm the user's
+# personal information more broadly was deleted (some companies retain
+# data outside the account record itself: order/support history,
+# marketing lists, backups). A real company reply exposed the gap this
+# closes: "We can confirm that the account associated with this email
+# address, <email>, and its details have already been deleted as
+# requested." - note the long, comma-heavy "associated with <email>,
+# and its details" clause between "account" and "deleted", which is why
+# the gap below uses _NOT_SENTENCE_BREAK (defined at the top of this
+# file) rather than a bare `.{0,N}` or a `[^.]{0,N}` character class -
+# the latter would also block the dot inside an email domain like
+# "gmail.com", which sits directly in that gap for the real fixture.
+ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED_PATTERNS = [
+    rf"delet(ed|ing){_NOT_SENTENCE_BREAK}{{0,40}}\b(account|profile|membership)\b",
+    rf"\b(account|profile|membership)\b{_NOT_SENTENCE_BREAK}{{0,110}}\bdelet(ed|ing)\b",
+]
+
 VERIFICATION_NEEDED_PATTERNS = [
     r"verify your identity",
     r"confirm your (email|identity|request)",
@@ -131,6 +199,7 @@ IN_PROGRESS_PATTERNS = [
 _PATTERN_ORDER = [
     (DeletionStatus.COMPLETED, COMPLETED_PATTERNS),
     (DeletionStatus.REJECTED, REJECTED_PATTERNS),
+    (DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED_PATTERNS),
     (DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED, ACCOUNT_CLOSED_DATA_UNVERIFIED_PATTERNS),
     (DeletionStatus.VERIFICATION_NEEDED, VERIFICATION_NEEDED_PATTERNS),
     (DeletionStatus.MORE_INFO_REQUIRED, MORE_INFO_REQUIRED_PATTERNS),
@@ -139,10 +208,11 @@ _PATTERN_ORDER = [
 
 LLM_CLASSIFY_PROMPT = """You are reading ONE email reply from a company, sent in response to a data-deletion request that was already sent to them. Classify it into exactly one of these labels:
 
-SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, ACCOUNT_CLOSED_DATA_UNVERIFIED, COMPLETED, REJECTED, UNKNOWN_RESPONSE
+SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, ACCOUNT_CLOSED_DATA_UNVERIFIED, COMPLETED, REJECTED, UNKNOWN_RESPONSE
 
 Rules:
-- COMPLETED means the company explicitly states the deletion has ALREADY happened - not that they received the request, opened a ticket, or are reviewing it. A generic acknowledgement is IN_PROGRESS, never COMPLETED.
+- COMPLETED means the company explicitly states that the user's PERSONAL INFORMATION/DATA (not merely an account, account record, profile, or membership record) has ALREADY been deleted - not that they received the request, opened a ticket, or are reviewing it. A generic acknowledgement is IN_PROGRESS, never COMPLETED. "Your account has been deleted", "your profile has been deleted", or similar account-scoped-only language is NEVER enough on its own - use ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED for that instead.
+- ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED means the company confirms the ACCOUNT, account record, profile, or membership record was DELETED (a stronger claim than closure - e.g. "the account associated with your email has been deleted"), but does NOT explicitly confirm the user's personal information more broadly (which may extend beyond the account record) was deleted.
 - ACCOUNT_CLOSED_DATA_UNVERIFIED means the company confirms closing/deactivating the ACCOUNT (e.g. "we've deactivated your account as requested"), but does NOT explicitly confirm the underlying personal DATA/information was deleted. Generic privacy/security assurances ("your information is protected", "handled securely", "never shared publicly") are NOT deletion confirmation and must never upgrade this to COMPLETED - use COMPLETED only if the reply separately, explicitly states the data itself was deleted/removed/erased.
 - REJECTED means the company explicitly declines or says it cannot fulfill the request.
 - VERIFICATION_NEEDED means they're asking the sender to verify identity/email before proceeding.

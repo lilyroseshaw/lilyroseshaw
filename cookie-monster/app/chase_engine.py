@@ -66,6 +66,7 @@ def derive_waiting_on(classification_status: str, body_text: str) -> str | None:
         return WaitingOn.USER
     if classification_status in (
         DeletionStatus.IN_PROGRESS, DeletionStatus.SUBMITTED, DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED,
+        DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
     ):
         return WaitingOn.COMPANY
     if classification_status == DeletionStatus.UNKNOWN_RESPONSE:
@@ -121,9 +122,12 @@ def on_request_sent(company: Company, sent_at: datetime.datetime) -> None:
 # ambiguous by definition (see response_classify.py and derive_waiting_on
 # above) and must never, by themselves, decide "the user's pending action
 # no longer matters, automatic chasing resumes." A company confirming
-# something concrete (e.g. ACCOUNT_CLOSED_DATA_UNVERIFIED) is a genuinely
-# new, specific fact worth resuming automation for.
-_SCHEDULE_SIGNIFICANT_FOR_RESUME = {DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED}
+# something concrete (e.g. ACCOUNT_CLOSED_DATA_UNVERIFIED,
+# ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED) is a genuinely new, specific
+# fact worth resuming automation for.
+_SCHEDULE_SIGNIFICANT_FOR_RESUME = {
+    DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+}
 
 
 def on_reply_classified(company: Company, classification_status: str, body_text: str, occurred_at: datetime.datetime) -> None:
@@ -222,6 +226,32 @@ def _followup_template(company: Company, to_email: str, subject: str, attempt: i
             "any of my information is still being retained, please specify which categories "
             "of information are being retained, the reason each is being kept, and how long "
             "it will be retained, if known.\n\n"
+            "Thank you."
+        )
+        return {"to": to_email, "subject": subject, "body": body}
+
+    if company.deletion_status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED:
+        # Distinct from the ACCOUNT_CLOSED_DATA_UNVERIFIED branch above -
+        # this company said the account/account record was DELETED, not
+        # merely closed, so thanking them for "closing" it would misquote
+        # their own reply. The open question is also different: not "was
+        # the account closure real" but "does the account record cover
+        # everything, or is other personal information (support history,
+        # order records, marketing lists, backups, ...) retained outside
+        # it" - deterministic and specific every time, same as the sibling
+        # template.
+        body = (
+            f"Thank you for confirming that the account (or account record) associated with "
+            f"my data deletion request (sent on {date_str}) has been deleted.\n\n"
+            "However, my original request was for the deletion of my PERSONAL INFORMATION more "
+            "broadly, not only the account record - some companies retain personal information "
+            "outside the account itself (for example, order or support history, marketing "
+            "records, or backups).\n\n"
+            "Could you please confirm whether all of my personal information - including "
+            "anything held outside the account record - has been deleted? If any of my "
+            "information is still being retained, please specify which categories of "
+            "information are being retained, the reason each is being kept, and how long it "
+            "will be retained, if known.\n\n"
             "Thank you."
         )
         return {"to": to_email, "subject": subject, "body": body}

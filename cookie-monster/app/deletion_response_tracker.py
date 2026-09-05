@@ -76,6 +76,7 @@ _EVENT_TYPE_FOR_STATUS = {
     # anything. See EventType.UNCLASSIFIED_REPLY_RECEIVED's own comment.
     DeletionStatus.UNKNOWN_RESPONSE: EventType.UNCLASSIFIED_REPLY_RECEIVED,
     DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED: EventType.ACCOUNT_CLOSED_DATA_UNVERIFIED,
+    DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED: EventType.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
 }
 
 # check_company_response's return value - lets callers (the manual

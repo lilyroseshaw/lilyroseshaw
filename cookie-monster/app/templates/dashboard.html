@@ -189,6 +189,10 @@
           <p class="state-line state-warning">{{ c.name }} closed the account, but didn't confirm your data was deleted.</p>
           <p class="state-meta">Baker's Dozen is following up to ask whether your personal data was deleted.</p>
 
+        {% elif c.deletion_status == "ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED" %}
+          <p class="state-line state-warning">Account data deleted — full data deletion unconfirmed.</p>
+          <p class="state-meta">{{ c.name }} confirmed the account/account details were deleted, but hasn't yet confirmed all your personal information was deleted. Baker's Dozen is following up to ask.</p>
+
         {% elif c.deletion_status == "COMPLETED" %}
           <p class="state-line state-success state-celebrate">✅ Done{% if c.deletion_completed_at %} <span class="state-meta">· {{ c.deletion_completed_at.strftime('%b %d, %Y') }}</span>{% endif %}{% if not (c.deletion_evidence and c.deletion_evidence.type == "user_reported") %} <span class="state-meta">· confirmed by {{ c.name }}</span>{% endif %}</p>
 
@@ -232,7 +236,7 @@
         {% endif %}
 
         {% if response_tracking_enabled and c.deletion_thread_id and c.deletion_status in
-              ("SUBMITTED", "IN_PROGRESS", "VERIFICATION_NEEDED", "MORE_INFO_REQUIRED", "UNKNOWN_RESPONSE", "ACCOUNT_CLOSED_DATA_UNVERIFIED") %}
+              ("SUBMITTED", "IN_PROGRESS", "VERIFICATION_NEEDED", "MORE_INFO_REQUIRED", "UNKNOWN_RESPONSE", "ACCOUNT_CLOSED_DATA_UNVERIFIED", "ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED") %}
         <form method="post" action="/api/companies/{{ c.id }}/deletion/check-response" data-loading-text="Checking…" class="check-response-form" data-company-id="{{ c.id }}" data-company-name="{{ c.name|e }}">
           <button type="submit" class="btn btn-primary btn-small">Check for reply</button>
         </form>

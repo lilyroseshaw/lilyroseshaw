@@ -81,12 +81,26 @@ class DeletionStatus:
     # 24h chase keeps going, explicitly asking whether personal data was
     # deleted and, if retained, what and why - see chase_engine.py.
     ACCOUNT_CLOSED_DATA_UNVERIFIED = "ACCOUNT_CLOSED_DATA_UNVERIFIED"
+    # Distinct from ACCOUNT_CLOSED_DATA_UNVERIFIED: the company claims the
+    # user's ACCOUNT, account record, account details, profile, or
+    # membership record was DELETED (not merely closed/deactivated) - a
+    # stronger, more specific claim - but has NOT explicitly confirmed the
+    # user's personal information more broadly (which may extend beyond
+    # the account record itself: order/support history, marketing lists,
+    # backups, etc.) was deleted. See response_classify.py's
+    # ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED_PATTERNS and its module
+    # docstring for why "account/profile/membership deleted" must never
+    # be conflated with COMPLETED. Not terminal: the 24h chase keeps
+    # going, explicitly asking whether personal data outside the account
+    # record was also deleted and, if retained, what/why/how long - see
+    # chase_engine.py.
+    ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED = "ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED"
 
     ALL = {
         NOT_STARTED, METHOD_LOOKUP, READY, CONFIRMATION_REQUIRED, SUBMITTING,
         SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED,
         USER_ACTION_REQUIRED, COMPLETED, REJECTED, FAILED, UNKNOWN_RESPONSE, UNKNOWN,
-        NO_METHOD_FOUND, ACCOUNT_CLOSED_DATA_UNVERIFIED,
+        NO_METHOD_FOUND, ACCOUNT_CLOSED_DATA_UNVERIFIED, ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
     }
 
     # Statuses that engine code only ever sets when it has real evidence -
@@ -106,7 +120,7 @@ class DeletionStatus:
     # of checking status membership alone if that distinction matters to you.
     SYSTEM_VERIFIED = {
         SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, REJECTED,
-        ACCOUNT_CLOSED_DATA_UNVERIFIED,
+        ACCOUNT_CLOSED_DATA_UNVERIFIED, ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
     }
 
     # Statuses for which a company reply might still arrive - the background
@@ -115,7 +129,7 @@ class DeletionStatus:
     # terminal: polling stops once a request reaches one of them.
     ACTIVELY_MONITORED = {
         SUBMITTED, IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED, UNKNOWN_RESPONSE,
-        ACCOUNT_CLOSED_DATA_UNVERIFIED,
+        ACCOUNT_CLOSED_DATA_UNVERIFIED, ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
     }
 
     # A request in one of these is done, one way or another - nothing more
@@ -281,6 +295,13 @@ class EventType:
     # DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED and
     # response_classify.py's ACCOUNT_CLOSED_DATA_UNVERIFIED_PATTERNS.
     ACCOUNT_CLOSED_DATA_UNVERIFIED = "ACCOUNT_CLOSED_DATA_UNVERIFIED"
+    # The company confirmed the ACCOUNT/account record/profile/membership
+    # record was DELETED (a stronger claim than mere closure), but said
+    # nothing confirming the user's personal information more broadly was
+    # deleted - see DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+    # and response_classify.py's
+    # ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED_PATTERNS.
+    ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED = "ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
@@ -288,7 +309,7 @@ class EventType:
         COMPLETION_CONFIRMED, USER_MARKED_COMPLETE, REQUEST_REJECTED, FAILED, RETRY,
         RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED, RESEARCH_DEFERRED,
         EXECUTION_STARTED, EXECUTION_INTERRUPTED, MAIL_REPLY_SENT,
-        FOLLOWUP_SENT, ACCOUNT_CLOSED_DATA_UNVERIFIED,
+        FOLLOWUP_SENT, ACCOUNT_CLOSED_DATA_UNVERIFIED, ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
     }
 
 

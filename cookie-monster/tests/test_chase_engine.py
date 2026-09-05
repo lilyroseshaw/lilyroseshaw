@@ -74,6 +74,7 @@ def _inbound(db, company, gmail_message_id="reply-1", occurred_at=None, from_dis
         (DeletionStatus.REJECTED, "", WaitingOn.ESCALATION_NEEDED),
         (DeletionStatus.COMPLETED, "", None),
         (DeletionStatus.FAILED, "", None),
+        (DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, "", WaitingOn.COMPANY),
     ],
 )
 def test_derive_waiting_on_table(status, body, expected):
@@ -202,6 +203,30 @@ def test_unknown_without_signal_keeps_chase_active(db):
     chase_engine.on_reply_classified(company, DeletionStatus.UNKNOWN_RESPONSE, "Thanks!", datetime.datetime(2024, 1, 2, 1))
     assert company.waiting_on == WaitingOn.COMPANY
     assert company.next_followup_at == scheduled  # already scheduled - unchanged, not paused, not lost
+
+
+def test_account_record_deleted_does_not_postpone_already_scheduled_chase(db):
+    scheduled = datetime.datetime(2024, 1, 2, 12, 0, 0)
+    company = _company(db, waiting_on=WaitingOn.COMPANY, next_followup_at=scheduled)
+    chase_engine.on_reply_classified(
+        company, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, "Your account has been deleted.",
+        datetime.datetime(2024, 1, 2, 1),
+    )
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert company.next_followup_at == scheduled  # no fresh grace period from reclassified/new evidence
+
+
+def test_account_record_deleted_can_resume_chase_after_user_pause(db):
+    """Unlike a generic/ambiguous reply, ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+    is specific/evidence-backed enough to resume automatic chasing after a
+    deliberate USER pause - see _SCHEDULE_SIGNIFICANT_FOR_RESUME."""
+    occurred_at = datetime.datetime(2024, 1, 5, 9, 0, 0)
+    company = _company(db, waiting_on=WaitingOn.USER, next_followup_at=None)
+    chase_engine.on_reply_classified(
+        company, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, "Your account has been deleted.", occurred_at,
+    )
+    assert company.waiting_on == WaitingOn.COMPANY
+    assert company.next_followup_at == occurred_at + datetime.timedelta(hours=config.FOLLOWUP_INTERVAL_HOURS)
 
 
 # --- on_user_action_completed: items 7 ---
