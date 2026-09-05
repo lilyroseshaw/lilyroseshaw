@@ -18,9 +18,14 @@ def record_event(
     source: str = EventSource.SYSTEM,
     recipe_id: int | None = None,
     recipe_version: int | None = None,
+    privacy_case_id: int | None = None,
 ) -> DeletionEvent:
     """Adds the event to the session but does not commit - callers include it
-    in the same transaction as the status change it documents."""
+    in the same transaction as the status change it documents.
+
+    privacy_case_id is None by default and only ever set for a
+    RECIPE_SELECTED event (see app/privacy_case.py's select_recipe) -
+    every existing call site is unaffected by this parameter's addition."""
     event = DeletionEvent(
         company_id=company_id,
         event_type=event_type,
@@ -28,6 +33,7 @@ def record_event(
         evidence=evidence or {},
         recipe_id=recipe_id,
         recipe_version=recipe_version,
+        privacy_case_id=privacy_case_id,
         occurred_at=datetime.datetime.utcnow(),
     )
     db.add(event)
