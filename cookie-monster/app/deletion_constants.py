@@ -302,6 +302,13 @@ class EventType:
     # and response_classify.py's
     # ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED_PATTERNS.
     ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED = "ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED"
+    # The user explicitly selected (or re-selected) a Cleanup Recipe -
+    # RecipeChoice.* - for this company's PrivacyCase. Always source=USER:
+    # never inferred, never fabricated for legacy data. Re-selection is
+    # allowed and recorded as another event; PrivacyCase.selected_recipe
+    # holds only the current value, this is the append-only history of how
+    # it got there. evidence carries {"selected_recipe": RecipeChoice.*}.
+    RECIPE_SELECTED = "RECIPE_SELECTED"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
@@ -310,6 +317,7 @@ class EventType:
         RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED, RESEARCH_DEFERRED,
         EXECUTION_STARTED, EXECUTION_INTERRUPTED, MAIL_REPLY_SENT,
         FOLLOWUP_SENT, ACCOUNT_CLOSED_DATA_UNVERIFIED, ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        RECIPE_SELECTED,
     }
 
 
@@ -326,6 +334,29 @@ class WaitingOn:
     ESCALATION_NEEDED = "ESCALATION_NEEDED"
 
     ALL = {COMPANY, USER, ESCALATION_NEEDED}
+
+
+class RecipeChoice:
+    """The user's explicit disposition for a company, chosen from exactly
+    three options - see PrivacyCase in models.py. This is USER INTENT
+    ("what do I want done"), never a mechanism (that's DeletionMethod/
+    DeletionRecipe) and never evidence that anything actually happened
+    (that's DeletionEvent/DeletionStatus). `None` on PrivacyCase.selected_recipe
+    is a fourth, legitimate state - "no Cleanup Recipe explicitly selected /
+    legacy pre-recipe-picker case" - and is deliberately NOT a member of ALL."""
+    # Delete eligible personal data; the account may need to close.
+    FULL_CLEAN = "FULL_CLEAN"
+    # Keep the account/service; remove/opt out of nonessential data use only -
+    # never login credentials, data necessary to maintain the account/service,
+    # narrowly necessary security/fraud data, or legally required records.
+    JUST_THE_ESSENTIALS = "JUST_THE_ESSENTIALS"
+    # No privacy request, no deletion, no privacy-completion reward - the
+    # company sits in the Pantry (a user disposition, not a privacy outcome)
+    # until reconsidered. Pantry membership is derived as
+    # selected_recipe == LEAVE_IT_BE; it is never stored as a separate flag.
+    LEAVE_IT_BE = "LEAVE_IT_BE"
+
+    ALL = {FULL_CLEAN, JUST_THE_ESSENTIALS, LEAVE_IT_BE}
 
 
 class EventSource:

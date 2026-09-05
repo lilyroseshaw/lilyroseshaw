@@ -1,10 +1,15 @@
+import datetime
 import json
 import sqlite3
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from app import migrations
+from app.db import Base
+from app.deletion_constants import EventType
+from app.models import Company, DeletionEvent, PrivacyCase
 
 # Mirrors the schema this app actually shipped with at commit 891415b:
 # the original columns plus deletion_status/deletion_requested_at/deletion_evidence
@@ -136,7 +141,10 @@ def test_migration_on_fresh_database_is_a_noop(tmp_path):
     engine = create_engine(f"sqlite:///{db_path}")
     # No companies table exists yet - create_all() would make it fresh.
     result = migrations.migrate(engine, str(db_path))
-    assert result == {"added_columns": [], "normalized_rows": 0, "backfilled_recipes": 0}
+    assert result == {
+        "added_columns": [], "normalized_rows": 0, "backfilled_recipes": 0,
+        "added_event_columns": [], "backfilled_privacy_cases": 0,
+    }
 
 
 def test_migration_does_not_back_up_a_fresh_empty_database(tmp_path):
@@ -210,3 +218,198 @@ def test_migration_backfills_deletion_recipe_from_verified_company(tmp_path):
     # Idempotent - running again doesn't duplicate the recipe.
     second = migrations.migrate(engine, str(db_path))
     assert second["backfilled_recipes"] == 0
+
+
+# --- Cleanup Recipes milestone, commit #1: PrivacyCase backfill + DeletionEvent.privacy_case_id ---
+
+def _fresh_engine_with_companies(tmp_path, name, domains):
+    """A file-backed engine with the CURRENT full schema (via create_all) and
+    one fabricated Company per domain - fabricated companies only, no
+    production/company-specific data."""
+    db_path = tmp_path / name
+    engine = create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(bind=engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    for domain in domains:
+        session.add(Company(
+            name=f"Fabricated {domain}", domain=domain, relationship_type="transactional",
+            status="confirmed", confidence="high", evidence_count=1, evidence_types=[],
+            example_subjects=[], detection_reasons=[],
+            first_seen=datetime.datetime(2022, 1, 1), last_seen=datetime.datetime(2022, 1, 1),
+        ))
+    session.commit()
+    session.close()
+    return engine, db_path
+
+
+def test_migration_backfills_one_privacy_case_per_company(tmp_path):
+    engine, db_path = _fresh_engine_with_companies(
+        tmp_path, "backfill.db", ["fabricated-a.example", "fabricated-b.example"]
+    )
+    result = migrations.migrate(engine, str(db_path))
+    assert result["backfilled_privacy_cases"] == 2
+
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    cases = session.query(PrivacyCase).all()
+    assert len(cases) == 2
+    assert {c.company_id for c in cases} == {
+        c.id for c in session.query(Company).all()
+    }
+    session.close()
+
+
+def test_migration_backfilled_selected_recipe_is_always_none(tmp_path):
+    """Never infer FULL_CLEAN (or any recipe) from pre-existing deletion
+    activity - even a company with an in-flight deletion request predates
+    the recipe picker and must not have intent fabricated for it."""
+    engine, db_path = _fresh_engine_with_companies(tmp_path, "backfill.db", ["fabricated-active.example"])
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    company = session.query(Company).one()
+    company.deletion_status = "SUBMITTED"
+    company.deletion_requested_at = datetime.datetime(2026, 1, 1)
+    session.commit()
+    company_id = company.id
+    session.close()
+
+    migrations.migrate(engine, str(db_path))
+
+    session = Session()
+    case = session.query(PrivacyCase).filter(PrivacyCase.company_id == company_id).one()
+    assert case.selected_recipe is None
+    assert case.recipe_selected_at is None
+    session.close()
+
+
+def test_migration_backfill_is_idempotent_no_duplicates(tmp_path):
+    engine, db_path = _fresh_engine_with_companies(
+        tmp_path, "backfill.db", ["fabricated-a.example", "fabricated-b.example"]
+    )
+    migrations.migrate(engine, str(db_path))
+    second = migrations.migrate(engine, str(db_path))
+    assert second["backfilled_privacy_cases"] == 0
+
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    cases = session.query(PrivacyCase).all()
+    assert len(cases) == 2  # still exactly one per company, no duplicates
+    session.close()
+
+
+def test_migration_backfill_does_not_mutate_existing_company_rows(tmp_path):
+    engine, db_path = _fresh_engine_with_companies(tmp_path, "backfill.db", ["fabricated-a.example"])
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    before = {
+        col: getattr(session.query(Company).one(), col)
+        for col in (
+            "name", "domain", "relationship_type", "status", "confidence", "evidence_count",
+            "deletion_status", "deletion_requested_at", "deletion_evidence",
+            "created_at", "updated_at",
+        )
+    }
+    session.close()
+
+    migrations.migrate(engine, str(db_path))
+
+    session = Session()
+    after = {
+        col: getattr(session.query(Company).one(), col)
+        for col in before
+    }
+    session.close()
+    assert after == before
+
+
+def test_migration_backfill_does_not_mutate_existing_deletion_event_rows(tmp_path):
+    engine, db_path = _fresh_engine_with_companies(tmp_path, "backfill.db", ["fabricated-a.example"])
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    company = session.query(Company).one()
+    event = DeletionEvent(company_id=company.id, event_type=EventType.EMAIL_SENT, evidence={"note": "pre-existing"})
+    session.add(event)
+    session.commit()
+    event_id = event.id
+    before = (event.company_id, event.event_type, event.source, event.evidence, event.privacy_case_id)
+    session.close()
+
+    migrations.migrate(engine, str(db_path))
+
+    session = Session()
+    after_event = session.query(DeletionEvent).filter(DeletionEvent.id == event_id).one()
+    after = (after_event.company_id, after_event.event_type, after_event.source, after_event.evidence, after_event.privacy_case_id)
+    session.close()
+    assert after == before
+    assert after_event.privacy_case_id is None  # untouched, not retroactively linked
+
+
+def test_migration_backfill_never_emits_recipe_selected_event(tmp_path):
+    engine, db_path = _fresh_engine_with_companies(
+        tmp_path, "backfill.db", ["fabricated-a.example", "fabricated-b.example"]
+    )
+    migrations.migrate(engine, str(db_path))
+
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    recipe_events = session.query(DeletionEvent).filter(DeletionEvent.event_type == EventType.RECIPE_SELECTED).all()
+    assert recipe_events == []
+    session.close()
+
+
+def test_migration_adds_privacy_case_id_column_to_deletion_events():
+    """New DeletionEvent.privacy_case_id column is created via create_all()
+    on a fresh schema (no ALTER needed) and is nullable/backward-compatible -
+    a row written without it stays NULL."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    with engine.connect() as conn:
+        cols = {row[1]: row for row in conn.exec_driver_sql("PRAGMA table_info(deletion_events)")}
+    assert "privacy_case_id" in cols
+    notnull_flag = cols["privacy_case_id"][3]
+    assert notnull_flag == 0  # PRAGMA table_info's notnull column: 0 = nullable
+
+
+def test_migration_adds_privacy_case_id_to_legacy_deletion_events_table(tmp_path):
+    """A pre-existing `deletion_events` table (from before this milestone,
+    without privacy_case_id) gets the column added additively, and existing
+    rows are left with it NULL rather than erroring or requiring backfill."""
+    db_path = tmp_path / "legacy_events.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(LEGACY_SCHEMA)
+    conn.executescript(
+        """
+        CREATE TABLE deletion_events (
+            id INTEGER PRIMARY KEY,
+            company_id INTEGER,
+            event_type VARCHAR(32),
+            source VARCHAR(16),
+            occurred_at DATETIME,
+            evidence JSON,
+            recipe_id INTEGER,
+            recipe_version INTEGER,
+            created_at DATETIME
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO deletion_events (id, company_id, event_type, source, occurred_at, evidence, created_at) "
+        "VALUES (1, 1, 'EMAIL_SENT', 'SYSTEM', '2022-01-01 00:00:00', '{}', '2022-01-01 00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    engine = create_engine(f"sqlite:///{db_path}")
+    result = migrations.migrate(engine, str(db_path))
+    assert "privacy_case_id" in result["added_event_columns"]
+
+    with engine.connect() as conn:
+        cols = {row[1] for row in conn.exec_driver_sql("PRAGMA table_info(deletion_events)")}
+        assert "privacy_case_id" in cols
+        row = conn.exec_driver_sql("SELECT privacy_case_id FROM deletion_events WHERE id = 1").fetchone()
+    assert row[0] is None
+
+    # Idempotent - running again doesn't try to re-add the column.
+    second = migrations.migrate(engine, str(db_path))
+    assert second["added_event_columns"] == []

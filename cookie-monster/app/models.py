@@ -135,6 +135,45 @@ class Company(Base):
     followups_paused: Mapped[bool] = mapped_column(default=False)
 
 
+class PrivacyCase(Base):
+    """The user's explicit disposition for a company - see RecipeChoice in
+    deletion_constants.py. Persists ONLY user intent/case identity, never a
+    derived outcome: whether the account was closed, personal data was
+    deleted, etc. is computed fresh from Company/DeletionEvent evidence by
+    derive_case_outcome() (to be added in a later commit of this milestone),
+    never cached here - there must be exactly one source of truth for that,
+    and it's the existing audited deletion/chase state, not a second stored
+    projection of it.
+
+    selected_recipe is nullable, and NULL is a legitimate, permanent state:
+    "no Cleanup Recipe explicitly selected" - either a brand-new company the
+    user hasn't chosen a recipe for yet, or a legacy case that predates the
+    recipe picker (see migrations.py's backfill, which creates one of these
+    per pre-existing Company with selected_recipe left NULL rather than
+    inferring FULL_CLEAN from old deletion-request activity). Pantry
+    membership is derived as selected_recipe == RecipeChoice.LEAVE_IT_BE,
+    never stored as a separate flag - see the "no is_pantry column" rule in
+    the Cleanup Recipes design.
+
+    One row per Company (1:1) for this milestone - company_id is unique."""
+
+    __tablename__ = "privacy_cases"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(ForeignKey("companies.id"), unique=True, index=True)
+    # RecipeChoice.* or None ("no Cleanup Recipe explicitly selected").
+    selected_recipe: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # When selected_recipe was last set - None whenever selected_recipe is
+    # None. See EventType.RECIPE_SELECTED for the append-only history of
+    # every selection/re-selection, of which this is only the latest.
+    recipe_selected_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
+    )
+
+
 class DeletionRecipe(Base):
     """The shared, reusable cache/knowledge base: 'how does this domain handle
     deletion requests'. One row per normalized domain, independent of any one
@@ -206,6 +245,11 @@ class DeletionEvent(Base):
     evidence: Mapped[dict] = mapped_column(JSON, default=dict)
     recipe_id: Mapped[int | None] = mapped_column(ForeignKey("deletion_recipes.id"), nullable=True)
     recipe_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Set only for a RECIPE_SELECTED event (see EventType.RECIPE_SELECTED) -
+    # nullable/backward-compatible so every pre-existing event row, and every
+    # event type unrelated to Cleanup Recipes, is untouched by this column's
+    # addition. Not a general-purpose link: other event types leave this NULL.
+    privacy_case_id: Mapped[int | None] = mapped_column(ForeignKey("privacy_cases.id"), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
 
 

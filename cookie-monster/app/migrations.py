@@ -56,6 +56,12 @@ NEW_DELETION_COLUMNS: list[tuple[str, str, str | None]] = [
     ("followups_paused", "BOOLEAN", "0"),
 ]
 
+# Additive columns for the existing `deletion_events` table (Cleanup Recipes
+# milestone, commit #1 - see models.py's PrivacyCase/DeletionEvent).
+NEW_DELETION_EVENT_COLUMNS: list[tuple[str, str, str | None]] = [
+    ("privacy_case_id", "INTEGER", None),
+]
+
 
 def backup_database(db_path: str) -> str | None:
     """Copies the SQLite file aside before a schema/data change. Returns the
@@ -209,6 +215,67 @@ def _backfill_deletion_recipes(conn) -> int:
     return inserted
 
 
+def _add_missing_deletion_event_columns(conn) -> list[str]:
+    """Same additive pattern as _add_missing_columns, for the existing
+    `deletion_events` table (Cleanup Recipes milestone). Defensive about the
+    table not existing yet - some tests/legacy databases predate
+    deletion_events entirely."""
+    if "deletion_events" not in _existing_tables(conn):
+        return []
+    existing_cols = _existing_columns(conn, "deletion_events")
+    missing = [c for c in NEW_DELETION_EVENT_COLUMNS if c[0] not in existing_cols]
+    added = []
+    for name, sql_type, default_literal in missing:
+        conn.exec_driver_sql(f"ALTER TABLE deletion_events ADD COLUMN {name} {sql_type}")
+        if default_literal is not None:
+            conn.exec_driver_sql(f"UPDATE deletion_events SET {name} = {default_literal} WHERE {name} IS NULL")
+        added.append(name)
+    return added
+
+
+def _backfill_privacy_cases(conn) -> int:
+    """Creates one PrivacyCase row per existing Company that doesn't already
+    have one, with selected_recipe left NULL - see models.py's PrivacyCase
+    docstring. NULL, never FULL_CLEAN or any other RecipeChoice, because a
+    Cleanup Recipe represents explicit user intent under the new recipe-
+    picker product contract, and no historical deletion request (including
+    MALK's/Goop's) was made under that contract - inferring FULL_CLEAN from
+    old deletion_requested_at activity would fabricate user intent that was
+    never actually expressed.
+
+    Never mutates Company or existing DeletionEvent rows, never emits a
+    RECIPE_SELECTED event (that would likewise fabricate an intentional
+    selection that never happened), and never invokes any deletion/chase/
+    Gmail logic. Idempotent: a company that already has a PrivacyCase is
+    skipped, so re-running never creates a duplicate.
+    """
+    if "privacy_cases" not in _existing_tables(conn):
+        return 0  # table doesn't exist yet on this connection - be defensive, same as _backfill_deletion_recipes
+
+    company_ids = [row[0] for row in conn.exec_driver_sql("SELECT id FROM companies")]
+    if not company_ids:
+        return 0
+
+    existing_case_company_ids = {
+        row[0] for row in conn.exec_driver_sql("SELECT company_id FROM privacy_cases")
+    }
+
+    now_str = datetime.datetime.utcnow().isoformat(sep=" ")
+    inserted = 0
+    for company_id in company_ids:
+        if company_id in existing_case_company_ids:
+            continue
+        conn.execute(
+            text(
+                "INSERT INTO privacy_cases (company_id, selected_recipe, recipe_selected_at, created_at, updated_at) "
+                "VALUES (:company_id, NULL, NULL, :now, :now)"
+            ),
+            {"company_id": company_id, "now": now_str},
+        )
+        inserted += 1
+    return inserted
+
+
 def migrate(engine: Engine, db_path: str) -> dict[str, object]:
     """Adds any missing deletion-tracking columns to an existing `companies`
     table and normalizes legacy deletion_status/deletion_evidence values.
@@ -217,7 +284,10 @@ def migrate(engine: Engine, db_path: str) -> dict[str, object]:
     creates it fresh with every current column, so no migration applies)."""
     with engine.connect() as conn:
         if "companies" not in _existing_tables(conn):
-            return {"added_columns": [], "normalized_rows": 0, "backfilled_recipes": 0}
+            return {
+                "added_columns": [], "normalized_rows": 0, "backfilled_recipes": 0,
+                "added_event_columns": [], "backfilled_privacy_cases": 0,
+            }
 
         existing_cols = _existing_columns(conn, "companies")
         needs_columns = any(c[0] not in existing_cols for c in NEW_DELETION_COLUMNS)
@@ -240,5 +310,10 @@ def migrate(engine: Engine, db_path: str) -> dict[str, object]:
         # By this point deletion_status definitely exists (pre-existing or just added).
         normalized = _normalize_legacy_deletion_data(conn, has_deletion_columns=True)
         backfilled = _backfill_deletion_recipes(conn)
+        added_event_columns = _add_missing_deletion_event_columns(conn)
+        backfilled_privacy_cases = _backfill_privacy_cases(conn)
         conn.commit()
-        return {"added_columns": added, "normalized_rows": normalized, "backfilled_recipes": backfilled}
+        return {
+            "added_columns": added, "normalized_rows": normalized, "backfilled_recipes": backfilled,
+            "added_event_columns": added_event_columns, "backfilled_privacy_cases": backfilled_privacy_cases,
+        }
