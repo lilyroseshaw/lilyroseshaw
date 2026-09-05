@@ -84,7 +84,7 @@ _EXPECTED = {
     DeletionStatus.UNKNOWN: (AccountOutcome.UNKNOWN, PersonalDataOutcome.UNKNOWN, RetentionOutcome.NONE_DISCLOSED, CaseState.WORKING),
     DeletionStatus.NO_METHOD_FOUND: (AccountOutcome.UNKNOWN, PersonalDataOutcome.UNKNOWN, RetentionOutcome.NONE_DISCLOSED, CaseState.WORKING),
     DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED: (AccountOutcome.CLOSED, PersonalDataOutcome.DELETION_REQUESTED, RetentionOutcome.NONE_DISCLOSED, CaseState.WORKING),
-    DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED: (AccountOutcome.UNKNOWN, PersonalDataOutcome.PARTIALLY_DELETED, RetentionOutcome.NONE_DISCLOSED, CaseState.WORKING),
+    DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED: (AccountOutcome.UNKNOWN, PersonalDataOutcome.DELETION_REQUESTED, RetentionOutcome.NONE_DISCLOSED, CaseState.WORKING),
     # UNKNOWN_RESPONSE's overall depends on waiting_on - tested separately below.
     DeletionStatus.UNKNOWN_RESPONSE: (AccountOutcome.UNKNOWN, PersonalDataOutcome.DELETION_REQUESTED, RetentionOutcome.NONE_DISCLOSED, CaseState.WORKING),
 }
@@ -184,6 +184,38 @@ def test_leave_it_be_on_fresh_company_does_not_falsely_resolve():
     assert outcome.is_pantry is True
 
 
+def test_pantry_working_must_not_be_read_as_active_work():
+    """PANTRY / OVERALL INVARIANT (see case_outcome.py's module docstring):
+    is_pantry is a USER DISPOSITION axis; overall is an EVIDENCE/PRIVACY-
+    WORK projection. They are independent and must be read together.
+
+    This fixture is the exact shape a future "active work" dashboard
+    filter/query must not get wrong: a Pantry case with no privacy
+    evidence legitimately derives overall=WORKING (nothing has resolved)
+    at the same time as is_pantry=True (the user chose not to pursue this
+    further). WORKING here means only "no privacy result exists yet" -
+    never "Baker's Dozen is actively working this case". Any future
+    active-work surface MUST check is_pantry and exclude Pantry cases
+    BEFORE branching on overall - branching on overall alone would
+    silently surface every un-pursued Pantry case as active work.
+    No dashboard filtering exists yet; this test only pins the
+    CaseOutcome shape such a filter must handle correctly."""
+    pantry_case = _company(DeletionStatus.NOT_STARTED)
+    outcome = derive_case_outcome(pantry_case, _case(RecipeChoice.LEAVE_IT_BE))
+
+    assert outcome.overall == CaseState.WORKING
+    assert outcome.is_pantry is True
+
+    # The one correct way to answer "is this case active work": check
+    # is_pantry first. A consumer that skips this and treats
+    # overall == WORKING as sufficient proof of active work is wrong -
+    # this is exactly what that mistake would look like.
+    naive_active_work = outcome.overall == CaseState.WORKING
+    correct_active_work = (not outcome.is_pantry) and outcome.overall == CaseState.WORKING
+    assert naive_active_work is True  # the trap: overall alone says "active"
+    assert correct_active_work is False  # is_pantry correctly excludes it
+
+
 # --- JUST_THE_ESSENTIALS / FULL_CLEAN axis applicability ------------------
 
 def test_full_clean_leaves_recipe_specific_axes_inapplicable():
@@ -239,11 +271,19 @@ def test_account_closed_never_becomes_personal_data_confirmed():
 
 
 def test_account_record_deleted_never_becomes_personal_data_confirmed():
+    """Account/account-record deletion != confirmed personal-data
+    deletion: the evidence establishes the account record was deleted, but
+    not that any specific subset of the user's broader personal
+    information was - PARTIALLY_DELETED would overclaim that, so this
+    reads exactly like an outstanding, unconfirmed request
+    (DELETION_REQUESTED), the same as ACCOUNT_CLOSED_DATA_UNVERIFIED."""
     company = _company(DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, waiting_on=WaitingOn.COMPANY)
     for case in _RECIPE_VARIANTS.values():
         outcome = derive_case_outcome(company, case)
+        assert outcome.personal_data == PersonalDataOutcome.DELETION_REQUESTED
         assert outcome.personal_data != PersonalDataOutcome.DELETION_CONFIRMED
-        assert outcome.personal_data != PersonalDataOutcome.RETAINED  # some real progress was claimed
+        assert outcome.personal_data != PersonalDataOutcome.PARTIALLY_DELETED
+        assert outcome.personal_data != PersonalDataOutcome.RETAINED
 
 
 def test_generic_acknowledgment_and_in_progress_remain_non_terminal():
@@ -317,13 +357,19 @@ def test_goop_shape_no_false_personal_data_completion():
     <email> ... has been deactivated' resolved to
     ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED with waiting_on=COMPANY (see
     the reliability fix verified live in commit 953b69b) - selected_recipe
-    is None (this case predates the recipe picker)."""
+    is None (this case predates the recipe picker). The account/account-
+    record deletion claim does NOT establish that any specific subset of
+    the user's broader personal data was deleted, so this must read as an
+    outstanding, unconfirmed request (DELETION_REQUESTED) - not
+    PARTIALLY_DELETED (too generous a claim) and never DELETION_CONFIRMED."""
     goop = _company(
         DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, waiting_on=WaitingOn.COMPANY,
         name="Goop Kitchen (fixture)", domain="goop-fixture.example",
         deletion_evidence={"type": "gmail_reply", "note": "regression fixture, not live production data"},
     )
     outcome = derive_case_outcome(goop, _case(None))
+    assert outcome.personal_data == PersonalDataOutcome.DELETION_REQUESTED
+    assert outcome.personal_data != PersonalDataOutcome.PARTIALLY_DELETED
     assert outcome.personal_data != PersonalDataOutcome.DELETION_CONFIRMED
     assert outcome.overall == CaseState.WORKING
     assert outcome.is_pantry is False

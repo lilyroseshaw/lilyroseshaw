@@ -31,6 +31,22 @@ LEAVE_IT_BE does not erase history: a company already carrying real
 deletion evidence before the user chooses LEAVE_IT_BE keeps deriving that
 same evidence-based outcome. The Pantry disposition changes nothing about
 what's true; it only tells higher layers "don't pursue this further."
+
+PANTRY / OVERALL INVARIANT - read this before consuming `overall` anywhere:
+is_pantry is a USER DISPOSITION axis. overall is an EVIDENCE/PRIVACY-WORK
+projection. They are independent and MUST be read together, never overall
+alone. A fresh LEAVE_IT_BE case with no evidence yet legitimately derives
+overall=CaseState.WORKING (the evidence itself hasn't resolved to anything)
+AND is_pantry=True at the same time - WORKING here means only "no privacy
+result exists yet," never "Baker's Dozen is actively pursuing this case."
+Any future surface that lists/queries "active work" (a dashboard filter, a
+chase-eligibility check, a count of in-progress cases, ...) MUST check
+is_pantry and exclude Pantry cases BEFORE branching on overall - checking
+overall in isolation would silently treat every un-pursued Pantry case as
+active work. See test_case_outcome.py's
+test_pantry_working_must_not_be_read_as_active_work for the fixture this
+guards against. (No dashboard filtering is implemented by this module -
+this is a documented contract for whoever writes that surface later.)
 """
 from dataclasses import dataclass
 
@@ -60,7 +76,12 @@ class CaseOutcome:
     nonessential_tracking: str | None  # NonessentialTrackingOutcome.* or None
     opt_out: str | None  # OptOutOutcome.* or None
     retention: str  # RetentionOutcome.*
-    overall: str  # CaseState.*
+    # CaseState.* - an EVIDENCE/PRIVACY-WORK projection, independent of
+    # is_pantry below. See this module's "PANTRY / OVERALL INVARIANT"
+    # docstring paragraph - overall must never be read without also
+    # checking is_pantry first.
+    overall: str
+    # USER DISPOSITION, independent of overall - see the same invariant.
     is_pantry: bool
 
 
@@ -184,11 +205,21 @@ class _StatusOutcomeRow:
 #   account stays UNKNOWN per the architecture's explicit instruction (a
 #   record-deletion claim is not the same claim as account closure, so it
 #   must not be promoted to CLOSED without evidence that specifically
-#   establishes closure). personal_data=PARTIALLY_DELETED: this is the one
-#   status where something concrete and real (the account record) was
-#   actually confirmed deleted, while the rest of the user's personal
-#   information remains unconfirmed - an honest middle value, still never
-#   DELETION_CONFIRMED. overall=WORKING (chase_engine: WaitingOn.COMPANY).
+#   establishes closure). personal_data=DELETION_REQUESTED, NOT
+#   PARTIALLY_DELETED: the evidence establishes that an account/account
+#   record/account details were deleted, but that does NOT necessarily
+#   establish that any specific, known subset of the user's broader
+#   personal-information universe was deleted - PARTIALLY_DELETED on the
+#   personal-data axis would be a broader factual claim than the evidence
+#   actually supports. This status exists precisely because account/
+#   account-record deletion != confirmed personal-data deletion, so the
+#   personal-data axis here reads exactly like an outstanding, unconfirmed
+#   request - identical in kind to ACCOUNT_CLOSED_DATA_UNVERIFIED, just
+#   reached via a stronger account-level claim. Still never
+#   DELETION_CONFIRMED. PersonalDataOutcome.PARTIALLY_DELETED remains in
+#   the vocabulary for a future status/evidence shape that explicitly
+#   establishes partial personal-data deletion - this status doesn't
+#   qualify. overall=WORKING (chase_engine: WaitingOn.COMPANY).
 _STATUS_OUTCOME_TABLE: dict[str, _StatusOutcomeRow] = {
     DeletionStatus.NOT_STARTED: _StatusOutcomeRow(
         AccountOutcome.UNKNOWN, PersonalDataOutcome.UNKNOWN, RetentionOutcome.NONE_DISCLOSED, CaseState.WORKING,
@@ -250,7 +281,7 @@ _STATUS_OUTCOME_TABLE: dict[str, _StatusOutcomeRow] = {
         CaseState.WORKING,
     ),
     DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED: _StatusOutcomeRow(
-        AccountOutcome.UNKNOWN, PersonalDataOutcome.PARTIALLY_DELETED, RetentionOutcome.NONE_DISCLOSED,
+        AccountOutcome.UNKNOWN, PersonalDataOutcome.DELETION_REQUESTED, RetentionOutcome.NONE_DISCLOSED,
         CaseState.WORKING,
     ),
 }
