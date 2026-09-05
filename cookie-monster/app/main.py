@@ -34,6 +34,13 @@ from app.deletion_response_tracker import (
 from app.gmail_scan import scan_inbox
 from app.mail import MailSendError, MailState, ReplyKind
 from app.models import Company, DeletionEvent, DeletionRecipe, MailMessage
+from app.privacy_case import (
+    InvalidRecipeChoiceError,
+    full_clean_review_copy,
+    full_clean_selected,
+    get_or_create_privacy_case,
+    select_recipe,
+)
 from app.response_classify import build_default_classifier
 
 app = FastAPI(title="Cookie Monster")
@@ -580,7 +587,13 @@ def _execution_plans_for_companies(db, companies: list[Company]) -> dict[int, di
     SAME classify_execution_capability() the actual execute endpoint uses,
     so the approval modal can never promise something execution won't
     actually do. Kept out of the template's own logic on purpose - see
-    deletion_engine.py's module docstring."""
+    deletion_engine.py's module docstring.
+
+    Also carries the Full Clean pre-commit gate/review copy for the same
+    companies - see app.privacy_case's full_clean_selected/
+    full_clean_review_copy. This is presentation-only: it never mutates
+    Company, PrivacyCase, or DeletionRecipe, and it never touches the
+    engine's own capability decision above."""
     relevant = [c for c in companies if c.deletion_status in (DeletionStatus.READY, DeletionStatus.FAILED)]
     plans: dict[int, dict] = {}
     for company in relevant:
@@ -592,12 +605,18 @@ def _execution_plans_for_companies(db, companies: list[Company]) -> dict[int, di
             f"Cookie Monster will take you to {company.name}'s official deletion page. "
             "Completing the request there is up to you - Cookie Monster can't do it on your behalf.",
         )
+        recipe = db.query(DeletionRecipe).filter(DeletionRecipe.domain == company.domain).one_or_none()
+        review_copy = full_clean_review_copy(company, recipe)
         plans[company.id] = {
             "capability": plan.capability,
             "reason": plan.reason,
             "consequences": plan.consequences,
             "action_text": action_text,
             "missing_identity_fields": plan.missing_identity_fields,
+            "full_clean_selected": full_clean_selected(db, company.id),
+            "recipe_summary": review_copy["summary"],
+            "recipe_explanation": review_copy["explanation"],
+            "recipe_tracking_note": review_copy["tracking_note"],
         }
     return plans
 
@@ -774,12 +793,19 @@ def preview_deletion_email(company_id: int):
     but also the execution capability (AUTO_EXECUTABLE/USER_STEP_REQUIRED/
     MANUAL_HANDOFF) and why, computed by the exact same
     classify_execution_capability() the execute endpoint itself uses - so
-    this preview can never promise something execution won't actually do."""
+    this preview can never promise something execution won't actually do.
+
+    Full Clean gate: refuses (400) unless this company's PrivacyCase has
+    RecipeChoice.FULL_CLEAN selected - see app.privacy_case.
+    full_clean_selected. Recipe selection is a separate, prior action
+    (POST .../privacy-case/recipe); this route never selects one itself."""
     db = get_session()
     try:
         company = db.get(Company, company_id)
         if company is None:
             raise HTTPException(status_code=404, detail="Company not found")
+        if not full_clean_selected(db, company_id):
+            raise HTTPException(status_code=400, detail="Choose Full Clean for this company before continuing.")
         if not company.deletion_verified:
             raise HTTPException(status_code=400, detail="No verified deletion recipe for this company.")
         plan = deletion_engine.classify_execution_capability(db, company)
@@ -804,12 +830,19 @@ def execute_company_deletion(company_id: int, force: bool = Form(False)):
     completed, this refuses to silently repeat it unless force=True (the UI
     re-confirms with the user first). A concurrent/duplicate approval for
     the SAME company (double-click, two tabs) is a silent no-op, not an
-    error - the in-flight attempt resolves on its own shortly."""
+    error - the in-flight attempt resolves on its own shortly.
+
+    Full Clean gate: refuses (400) unless this company's PrivacyCase has
+    RecipeChoice.FULL_CLEAN selected - same check as preview_deletion_email,
+    enforced independently here too so this can never be reached by
+    POSTing directly, skipping the preview/gate check in the UI."""
     db = get_session()
     try:
         company = db.get(Company, company_id)
         if company is None:
             raise HTTPException(status_code=404, detail="Company not found")
+        if not full_clean_selected(db, company_id):
+            raise HTTPException(status_code=400, detail="Choose Full Clean for this company before continuing.")
         try:
             deletion_engine.execute_deletion(db, company, force_resend=force)
         except deletion_engine.DuplicateRequestWarning:
@@ -817,6 +850,30 @@ def execute_company_deletion(company_id: int, force: bool = Form(False)):
         except deletion_engine.ExecutionInFlightError:
             return _redirect_to_company_card(company_id)
         except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        db.close()
+    return _redirect_to_company_card(company_id)
+
+
+@app.post("/api/companies/{company_id}/privacy-case/recipe")
+def select_company_recipe(company_id: int, recipe: str = Form(...)):
+    """Records an explicit Cleanup Recipe choice (RecipeChoice.*) - USER
+    INTENT ONLY. Deliberately separate from deletion/execute: this route
+    never sends anything, never touches Company, and never invokes
+    deletion_engine/chase_engine - see app.privacy_case.select_recipe's
+    docstring for the full list. The actual Full Clean send only happens
+    later, via the existing deletion/preview -> deletion/execute flow,
+    once this recipe is on file."""
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        privacy_case = get_or_create_privacy_case(db, company)
+        try:
+            select_recipe(db, privacy_case, recipe)
+        except InvalidRecipeChoiceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         db.close()

@@ -156,6 +156,10 @@
             data-action="{{ (plan.action_text if plan else '')|e }}"
             data-details="{{ (c.deletion_instructions or '')|e }}"
             data-consequences="{{ ((plan.consequences if plan else None) or '')|e }}"
+            data-full-clean-selected="{{ 'true' if (plan and plan.full_clean_selected) else 'false' }}"
+            data-recipe-summary="{{ (plan.recipe_summary if plan else '')|e }}"
+            data-recipe-explanation="{{ (plan.recipe_explanation if plan else '')|e }}"
+            data-recipe-tracking="{{ (plan.recipe_tracking_note if plan else '')|e }}"
           >Delete my data</button>
 
         {% elif c.deletion_status == "USER_ACTION_REQUIRED" %}
@@ -209,6 +213,10 @@
             data-action="Baker's Dozen will try sending this request again."
             data-details="{{ (c.deletion_instructions or '')|e }}"
             data-consequences="{{ ((plan.consequences if plan else None) or '')|e }}"
+            data-full-clean-selected="{{ 'true' if (plan and plan.full_clean_selected) else 'false' }}"
+            data-recipe-summary="{{ (plan.recipe_summary if plan else '')|e }}"
+            data-recipe-explanation="{{ (plan.recipe_explanation if plan else '')|e }}"
+            data-recipe-tracking="{{ (plan.recipe_tracking_note if plan else '')|e }}"
           >Send again</button>
         {% endif %}
 
@@ -380,23 +388,41 @@
 <div id="deletion-modal" class="deletion-modal" hidden>
   <div class="deletion-modal-card">
     <h3 id="deletion-modal-title">Delete my data</h3>
-    <p id="deletion-modal-action"></p>
-    <p id="deletion-modal-details" class="deletion-detail"></p>
-    <div id="deletion-modal-consequences" class="deletion-modal-warning" hidden>
-      <p><strong>Known consequences:</strong> <span id="deletion-modal-consequences-text"></span></p>
+    <p class="deletion-detail">Cleanup Recipe: Full Clean</p>
+
+    {# Shown only until this company's PrivacyCase has FULL_CLEAN on file -
+       see dashboard.js's openModal(). Selecting Full Clean here records
+       intent only (POSTs .../privacy-case/recipe) - it never sends or
+       executes anything; the actual request only goes out later, the next
+       time "Delete my data" is opened, through the unchanged flow below. #}
+    <div id="deletion-modal-choose-recipe" hidden>
+      <p id="deletion-modal-recipe-explanation" class="deletion-detail"></p>
+      <p class="deletion-modal-caution">This only tells Baker's Dozen what you want. It won't send or submit anything yet.</p>
     </div>
-    <div id="deletion-modal-user-step" class="deletion-modal-user-step" hidden>
-      <p>🔑 <strong>A step from you is still required:</strong> <span id="deletion-modal-user-step-reason"></span></p>
+
+    <div id="deletion-modal-confirm" hidden>
+      <p id="deletion-modal-recipe-summary" class="deletion-detail"></p>
+      <p id="deletion-modal-action"></p>
+      <p id="deletion-modal-details" class="deletion-detail"></p>
+      <div id="deletion-modal-consequences" class="deletion-modal-warning" hidden>
+        <p><strong>Known consequences:</strong> <span id="deletion-modal-consequences-text"></span></p>
+      </div>
+      <div id="deletion-modal-user-step" class="deletion-modal-user-step" hidden>
+        <p>🔑 <strong>A step from you is still required:</strong> <span id="deletion-modal-user-step-reason"></span></p>
+      </div>
+      <div id="deletion-modal-email" class="deletion-email-preview" hidden>
+        <p><strong>To:</strong> <span id="deletion-modal-email-to"></span></p>
+        <p><strong>Subject:</strong> <span id="deletion-modal-email-subject"></span></p>
+        <pre id="deletion-modal-email-body"></pre>
+      </div>
+      <p id="deletion-modal-tracking-note" class="deletion-detail"></p>
+      <p class="deletion-modal-caution">Some companies require identity verification before completing a deletion request. Baker's Dozen will never bypass CAPTCHA, MFA, or login requirements on your behalf.</p>
     </div>
-    <div id="deletion-modal-email" class="deletion-email-preview" hidden>
-      <p><strong>To:</strong> <span id="deletion-modal-email-to"></span></p>
-      <p><strong>Subject:</strong> <span id="deletion-modal-email-subject"></span></p>
-      <pre id="deletion-modal-email-body"></pre>
-    </div>
-    <p class="deletion-modal-caution">Some companies require identity verification before completing a deletion request. Baker's Dozen will never bypass CAPTCHA, MFA, or login requirements on your behalf.</p>
+
     <form method="post" id="deletion-modal-form">
       <div class="deletion-modal-actions">
         <button type="button" class="btn btn-ghost" id="deletion-modal-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="deletion-modal-recipe-submit" hidden>Choose Full Clean</button>
         <button type="submit" class="btn btn-primary" id="deletion-modal-submit">Continue</button>
       </div>
     </form>

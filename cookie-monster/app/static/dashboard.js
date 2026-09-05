@@ -173,10 +173,40 @@
     const emailBodyEl = document.getElementById("deletion-modal-email-body");
     const form = document.getElementById("deletion-modal-form");
     const submitBtn = document.getElementById("deletion-modal-submit");
+    const chooseRecipeEl = document.getElementById("deletion-modal-choose-recipe");
+    const confirmEl = document.getElementById("deletion-modal-confirm");
+    const recipeExplanationEl = document.getElementById("deletion-modal-recipe-explanation");
+    const recipeSummaryEl = document.getElementById("deletion-modal-recipe-summary");
+    const trackingNoteEl = document.getElementById("deletion-modal-tracking-note");
+    const recipeSubmitBtn = document.getElementById("deletion-modal-recipe-submit");
 
     modalCompanyId = btn.dataset.id;
     const name = btn.dataset.name || "this company";
     titleEl.textContent = "Delete my data — " + name;
+    modal.hidden = false;
+
+    // Full Clean gate (see main.py's preview_deletion_email/
+    // execute_company_deletion): until this company's PrivacyCase has
+    // FULL_CLEAN on file, the modal only ever shows the recipe-choice
+    // step - never the consequences/email preview/execute form, and never
+    // fetches deletion/preview (which the server refuses anyway without a
+    // recipe selected). Choosing Full Clean records intent only; the real
+    // preview -> execute flow below runs unchanged the NEXT time this
+    // modal opens, once selected.
+    const fullCleanSelected = btn.dataset.fullCleanSelected === "true";
+    chooseRecipeEl.hidden = fullCleanSelected;
+    confirmEl.hidden = !fullCleanSelected;
+    submitBtn.hidden = !fullCleanSelected;
+    recipeSubmitBtn.hidden = fullCleanSelected;
+    if (!fullCleanSelected) {
+      recipeExplanationEl.textContent = btn.dataset.recipeExplanation || "";
+      recipeSubmitBtn.disabled = false;
+      recipeSubmitBtn.textContent = "Choose Full Clean";
+      return;
+    }
+
+    recipeSummaryEl.textContent = btn.dataset.recipeSummary || "";
+    trackingNoteEl.textContent = btn.dataset.recipeTracking || "";
     actionEl.textContent = btn.dataset.action || "";
     detailsEl.textContent = btn.dataset.details || "";
     detailsEl.hidden = !btn.dataset.details;
@@ -186,7 +216,6 @@
     form.action = "/api/companies/" + btn.dataset.id + "/deletion/execute";
     submitBtn.disabled = false;
     emailPreviewEl.hidden = true;
-    modal.hidden = false;
 
     // Re-fetches the full execution plan (not just the email fields) so
     // the modal reflects the CURRENT state even if it's changed since this
@@ -230,6 +259,7 @@
     const cancelBtn = document.getElementById("deletion-modal-cancel");
     const form = document.getElementById("deletion-modal-form");
     const submitBtn = document.getElementById("deletion-modal-submit");
+    const recipeSubmitBtn = document.getElementById("deletion-modal-recipe-submit");
 
     cancelBtn.addEventListener("click", closeModal);
     modal.addEventListener("click", (event) => {
@@ -247,6 +277,35 @@
       // nothing happening - THEN closes once the swap (or fallback) runs.
       submitFormAjax(form, cardId, submitBtn, closeModal);
     });
+
+    // "Choose Full Clean" - records intent only (see main.py's
+    // select_company_recipe). Never posts to deletion/execute, never a
+    // form submit - a separate, explicit click, entirely distinct from
+    // the confirm/execute button above.
+    if (recipeSubmitBtn) {
+      recipeSubmitBtn.addEventListener("click", () => {
+        const cardId = modalCompanyId;
+        if (!cardId) return;
+        recipeSubmitBtn.disabled = true;
+        recipeSubmitBtn.textContent = "Choosing…";
+        fetch("/api/companies/" + cardId + "/privacy-case/recipe", {
+          method: "POST",
+          body: new URLSearchParams({ recipe: "FULL_CLEAN" }),
+          credentials: "same-origin",
+        })
+          .then((resp) => {
+            if (!resp.ok) throw new Error("recipe selection failed: " + resp.status);
+            return resp.text();
+          })
+          .then((html) => {
+            swapCard(cardId, html);
+            closeModal();
+          })
+          .catch(() => {
+            window.location.reload();
+          });
+      });
+    }
   }
 
   // ---- 4. Dedicated "Check for reply" state machine ----

@@ -1,6 +1,8 @@
 """Cleanup Recipe selection - the one place explicit USER INTENT (see
 RecipeChoice in deletion_constants.py) is persisted onto a PrivacyCase and
-audited.
+audited - plus the small read-only helpers (get_or_create_privacy_case,
+full_clean_selected, full_clean_review_copy) main.py's Full Clean
+preview/execute gating and pre-commit review copy are built on.
 
 Keep these distinctions explicit - none of them may collapse into each
 other:
@@ -25,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from app.deletion_constants import EventSource, EventType, RecipeChoice
 from app.deletion_events import record_event
-from app.models import PrivacyCase
+from app.models import Company, DeletionRecipe, PrivacyCase
 
 
 class InvalidRecipeChoiceError(ValueError):
@@ -112,3 +114,64 @@ def select_recipe(
     )
     db.commit()
     return privacy_case
+
+
+def get_or_create_privacy_case(db: Session, company: Company) -> PrivacyCase:
+    """Returns `company`'s existing PrivacyCase, or creates one with
+    selected_recipe=None (mirrors migrations.py's backfill exactly - never
+    infers a recipe) if none exists yet. Covers a company discovered after
+    the last migrate() backfill ran, during a still-running server
+    process - see migrations.py's _backfill_privacy_cases for the
+    equivalent one-time-startup version of this same guarantee (every
+    Company has exactly one PrivacyCase, selected_recipe=None until an
+    explicit select_recipe() call)."""
+    case = db.query(PrivacyCase).filter(PrivacyCase.company_id == company.id).one_or_none()
+    if case is not None:
+        return case
+    case = PrivacyCase(company_id=company.id, selected_recipe=None, recipe_selected_at=None)
+    db.add(case)
+    db.commit()
+    db.refresh(case)
+    return case
+
+
+def full_clean_selected(db: Session, company_id: int) -> bool:
+    """Whether this company's PrivacyCase currently has FULL_CLEAN
+    selected - the one gate the Full Clean preview/execution routes must
+    pass before proceeding (see main.py's preview_deletion_email/
+    execute_company_deletion). A missing PrivacyCase is treated exactly
+    like selected_recipe=None (fails closed) - it is never created just to
+    check this."""
+    case = db.query(PrivacyCase).filter(PrivacyCase.company_id == company_id).one_or_none()
+    return case is not None and case.selected_recipe == RecipeChoice.FULL_CLEAN
+
+
+def full_clean_review_copy(company: Company, recipe: DeletionRecipe | None) -> dict:
+    """Compact, truthful pre-commit review copy for the Full Clean recipe -
+    see select_recipe()'s module docstring for the intent-vs-evidence
+    distinction this must never blur. Uses ONLY existing trusted recipe
+    metadata (deletes_account) - never invents a company-specific
+    consequence, and never claims a stronger/more certain outcome than the
+    verified recipe actually supports. `recipe.known_consequences` (if
+    any) is surfaced separately, unchanged, by the existing approval
+    modal - this function does not duplicate it."""
+    if recipe is not None and recipe.deletes_account is True:
+        account_line = f"This will close your account with {company.name}."
+    elif recipe is not None and recipe.deletes_account is False:
+        account_line = (
+            f"Your account with {company.name} isn't expected to close, but some data may still be removed."
+        )
+    else:
+        account_line = f"This may close your account with {company.name}, depending on how they handle requests."
+
+    return {
+        "summary": f"Delete my eligible personal data from {company.name}.",
+        "explanation": (
+            f"Full Clean asks {company.name} to delete the personal information it can legally delete. "
+            f"{account_line}"
+        ),
+        "tracking_note": (
+            "Baker's Dozen will send and track the request for you when it can. "
+            "It only marks your data deleted once the evidence supports that."
+        ),
+    }
