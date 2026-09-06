@@ -1211,6 +1211,16 @@ button:disabled:hover,
   display: none;
 }
 
+/* Same equal-specificity/author-wins problem as above, this time between
+   [hidden] and .btn's own "display: inline-flex" - without this, toggling
+   .hidden on the modal's recipe-choice/execute buttons (dashboard.js's
+   openModal) left BOTH visible at once regardless of which stage was
+   active. Scoped to the modal's own action row only, not every .btn in
+   the app, since this is the one place a .btn is ever toggled hidden. */
+.deletion-modal-actions .btn[hidden] {
+  display: none;
+}
+
 .deletion-modal-card {
   width: min(480px, 100%);
   max-height: 90vh;

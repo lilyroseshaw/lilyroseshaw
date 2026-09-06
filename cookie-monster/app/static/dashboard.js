@@ -205,6 +205,12 @@
       return;
     }
 
+    // Reset in case this element is ever visible again later (e.g. a
+    // future recipe change) - never carry a stale "Choosing…"/disabled
+    // state into a stage that shouldn't show this button at all.
+    recipeSubmitBtn.disabled = false;
+    recipeSubmitBtn.textContent = "Choose Full Clean";
+
     recipeSummaryEl.textContent = btn.dataset.recipeSummary || "";
     trackingNoteEl.textContent = btn.dataset.recipeTracking || "";
     actionEl.textContent = btn.dataset.action || "";
@@ -279,9 +285,15 @@
     });
 
     // "Choose Full Clean" - records intent only (see main.py's
-    // select_company_recipe). Never posts to deletion/execute, never a
-    // form submit - a separate, explicit click, entirely distinct from
-    // the confirm/execute button above.
+    // select_company_recipe). Never posts to deletion/execute itself, and
+    // never a form submit - a separate, explicit click, entirely distinct
+    // from the confirm/execute button. On success, seamlessly transitions
+    // this SAME modal straight into the real preview (never closes and
+    // makes the user click "Delete my data" a second time) by re-running
+    // openModal() against the freshly swapped card's own button, whose
+    // server-rendered data-full-clean-selected is now "true" - that's the
+    // one and only thing that decides which stage renders, so this is
+    // just the normal open path, not a special case.
     if (recipeSubmitBtn) {
       recipeSubmitBtn.addEventListener("click", () => {
         const cardId = modalCompanyId;
@@ -298,8 +310,16 @@
             return resp.text();
           })
           .then((html) => {
-            swapCard(cardId, html);
-            closeModal();
+            if (!swapCard(cardId, html)) {
+              window.location.reload();
+              return;
+            }
+            const newBtn = document.querySelector('#company-' + cardId + ' .delete-my-data-btn');
+            if (newBtn) {
+              openModal(newBtn);
+            } else {
+              closeModal();
+            }
           })
           .catch(() => {
             window.location.reload();

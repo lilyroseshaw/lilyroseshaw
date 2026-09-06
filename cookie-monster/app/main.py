@@ -575,9 +575,9 @@ def _research_info_for_companies(db, companies: list[Company]) -> dict[int, dict
 
 _EXECUTION_ACTION_TEXT = {
     (ExecutionCapability.AUTO_EXECUTABLE, DeletionMethod.EMAIL_REQUEST):
-        "Cookie Monster will send the email below from your connected Gmail address.",
+        "Baker's Dozen will send the email below from your connected Gmail address.",
     (ExecutionCapability.USER_STEP_REQUIRED, DeletionMethod.EMAIL_REQUEST):
-        "Cookie Monster will prepare the email below for you to send yourself.",
+        "Baker's Dozen will prepare the email below for you to send yourself.",
 }
 
 
@@ -602,8 +602,9 @@ def _execution_plans_for_companies(db, companies: list[Company]) -> dict[int, di
         plan = deletion_engine.classify_execution_capability(db, company)
         action_text = _EXECUTION_ACTION_TEXT.get(
             (plan.capability, plan.method),
-            f"Cookie Monster will take you to {company.name}'s official deletion page. "
-            "Completing the request there is up to you - Cookie Monster can't do it on your behalf.",
+            f"{company.name} requires you to complete this request on its official deletion page. "
+            "Baker's Dozen can take you there, but it cannot complete login, identity verification, "
+            "CAPTCHA, or MFA for you.",
         )
         recipe = db.query(DeletionRecipe).filter(DeletionRecipe.domain == company.domain).one_or_none()
         review_copy = full_clean_review_copy(company, recipe)

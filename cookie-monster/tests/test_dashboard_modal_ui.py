@@ -165,3 +165,85 @@ def test_cancel_never_submits_a_deletion_request(live_server, page):
     page.goto(f"{base_url}/dashboard")
     assert "Deletion method ready" in page.content()
     assert page.locator("#deletion-modal").is_hidden()
+
+
+# --- Cleanup Recipes milestone, Full Clean UX fix: seamless two-stage
+# consent flow (no close-then-reopen, no ambiguous/stale controls) - see
+# app/static/dashboard.js's openModal()/recipe-submit handler and
+# style.css's ".deletion-modal-actions .btn[hidden]" rule, which fixes the
+# actual root cause (an equal-CSS-specificity author-vs-UA-stylesheet tie,
+# same class of bug as the .deletion-modal[hidden] fix above) that let
+# BOTH the recipe-choice and confirm/execute buttons render visible at
+# once regardless of which one JS had set `hidden` on.
+
+def test_first_stage_has_no_ambiguous_continue_button(live_server, page):
+    """Before a recipe is selected, the modal must show exactly Cancel and
+    Choose Full Clean - never the execute-flow's Continue/Send/Open button
+    alongside it."""
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    visible = page.locator("#deletion-modal-form button:visible").all_inner_texts()
+    assert visible == ["Cancel", "Choose Full Clean"]
+
+
+def test_choosing_full_clean_transitions_seamlessly_without_closing_modal(live_server, page):
+    """Choosing Full Clean must never close the modal and dump the user
+    back on the dashboard - it transitions the SAME modal directly into
+    the real preview, so only one click on "Delete my data" is ever
+    needed."""
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-recipe-submit")
+    page.wait_for_timeout(500)
+
+    assert page.locator("#deletion-modal").is_visible(), "the modal must stay open through the transition"
+    assert page.locator("#deletion-modal-confirm").is_visible(), "the real preview must now be showing"
+    assert page.locator("#deletion-modal-choose-recipe").is_hidden()
+
+
+def test_second_stage_has_no_stale_choosing_control(live_server, page):
+    """Once the real preview is showing, there must be exactly one
+    capability-specific primary CTA plus Cancel - never a leftover/stale
+    "Choosing…" recipe-selection control."""
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-recipe-submit")
+    page.wait_for_timeout(500)
+
+    visible = page.locator("#deletion-modal-form button:visible").all_inner_texts()
+    assert visible == ["Cancel", "Open the verified page"]
+    assert "Choosing" not in " ".join(visible)
+
+
+def test_full_clean_flow_uses_bakers_dozen_branding(live_server, page):
+    """No 'Cookie Monster' should remain anywhere in the Full Clean modal's
+    user-facing copy, in either stage."""
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    assert "Cookie Monster" not in page.locator("#deletion-modal").inner_text()
+
+    page.click("#deletion-modal-recipe-submit")
+    page.wait_for_timeout(500)
+    assert "Cookie Monster" not in page.locator("#deletion-modal").inner_text()
+    assert "Baker's Dozen" in page.locator("#deletion-modal").inner_text()
+
+
+def test_user_step_required_flow_does_not_claim_submission(live_server, page):
+    """A MANUAL_HANDOFF company's preview copy must never imply Baker's
+    Dozen already sent/submitted anything, and must state plainly that
+    login/identity verification/CAPTCHA/MFA are on the user."""
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-recipe-submit")
+    page.wait_for_timeout(500)
+
+    text = page.locator("#deletion-modal-confirm").inner_text()
+    lowered = text.lower()
+    assert "sent" not in lowered and "submitted" not in lowered
+    assert "login" in lowered or "identity verification" in lowered
+    assert "captcha" in lowered or "mfa" in lowered

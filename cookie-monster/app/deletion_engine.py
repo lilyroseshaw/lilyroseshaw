@@ -211,10 +211,7 @@ def classify_execution_capability(db: Session, company: Company) -> ExecutionPla
             return ExecutionPlan(
                 capability=ExecutionCapability.USER_STEP_REQUIRED,
                 method=method,
-                reason=(
-                    "Cookie Monster doesn't have the following information this request "
-                    f"requires: {', '.join(missing)}. Add it yourself before sending."
-                ),
+                reason=f"Missing: {', '.join(missing)}. Add it to the draft below before sending it yourself.",
                 consequences=recipe.known_consequences if recipe else None,
                 draft=draft,
                 missing_identity_fields=missing,
@@ -224,11 +221,7 @@ def classify_execution_capability(db: Session, company: Company) -> ExecutionPla
             return ExecutionPlan(
                 capability=ExecutionCapability.USER_STEP_REQUIRED,
                 method=method,
-                reason=(
-                    "Automatic sending isn't enabled yet. Cookie Monster will prepare the "
-                    "exact email below for you to send yourself - or enable automatic "
-                    "sending first to have Cookie Monster send it for you."
-                ),
+                reason="Automatic sending isn't enabled yet - turn it on to have Baker's Dozen send this for you.",
                 consequences=recipe.known_consequences if recipe else None,
                 draft=draft,
                 missing_identity_fields=[],
@@ -248,11 +241,7 @@ def classify_execution_capability(db: Session, company: Company) -> ExecutionPla
         return ExecutionPlan(
             capability=ExecutionCapability.MANUAL_HANDOFF,
             method=method,
-            reason=(
-                "This company's process requires a step Cookie Monster can't safely "
-                "automate (login, identity verification, CAPTCHA, or similar) - "
-                "completing it is up to you."
-            ),
+            reason="Requires a manual step on their own site.",
             consequences=recipe.known_consequences if recipe else None,
             draft=None,
             missing_identity_fields=[],
