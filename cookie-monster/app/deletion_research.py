@@ -260,14 +260,23 @@ class WebResearchProvider(DeletionResearchProvider):
         return None
 
 
-def build_default_provider() -> DeletionResearchProvider:
+def build_default_provider(search_backend: SearchBackend | None = None) -> DeletionResearchProvider:
     """Constructs the provider used app-wide, based on what's configured in
     .env. Zero keys set -> WebResearchProvider still works (Tier A + Pass 1
-    only). DELETION_RESEARCH_ENABLED=false -> no outbound requests at all."""
+    only). DELETION_RESEARCH_ENABLED=false -> no outbound requests at all.
+
+    `search_backend`, when given, is used as-is instead of constructing a
+    new one - see main.py, which shares ONE BraveSearchBackend (and its one
+    daily query budget) between this provider and
+    privacy_action_research.build_default_privacy_action_provider so the
+    two pipelines never silently double real API usage against the same
+    key. Every existing caller (build_default_provider() with no
+    arguments) is unaffected - this defaults to the exact prior behavior."""
     if not config.DELETION_RESEARCH_ENABLED:
         return NullResearchProvider()
 
-    search_backend = BraveSearchBackend(config.BRAVE_SEARCH_API_KEY) if config.BRAVE_SEARCH_API_KEY else None
+    if search_backend is None:
+        search_backend = BraveSearchBackend(config.BRAVE_SEARCH_API_KEY) if config.BRAVE_SEARCH_API_KEY else None
 
     llm_client = None
     if config.ANTHROPIC_API_KEY:

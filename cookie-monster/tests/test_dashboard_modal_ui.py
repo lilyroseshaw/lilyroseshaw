@@ -251,20 +251,23 @@ def test_choosing_just_the_essentials_transitions_seamlessly_to_its_own_review(l
     assert page.locator("#deletion-modal-confirm").is_hidden(), "Full Clean's preview/execute stage must never show for this recipe"
 
 
-def test_just_the_essentials_review_lists_both_actions_as_needing_research(live_server, page):
-    """With no research pipeline for opt-out/tracking-cleanup mechanisms
-    yet, every action must honestly read as needing research - never a
-    fabricated URL or a false claim of progress."""
+def test_just_the_essentials_review_offers_find_cleanup_method_for_both_actions(live_server, page):
+    """Before any research has run, both actions must offer the real
+    "Find cleanup method" action - never the old developer-facing "Needs
+    research" label, and never a fabricated URL or a false claim of
+    progress."""
     base_url, _ = live_server
     page.goto(f"{base_url}/dashboard")
     page.click(".delete-my-data-btn")
     page.click("#deletion-modal-jte-submit")
     page.wait_for_timeout(500)
 
-    text = page.locator("#deletion-modal-jte-actions").inner_text()
+    actions_el = page.locator("#deletion-modal-jte-actions")
+    text = actions_el.inner_text()
     assert "Nonessential tracking" in text
     assert "Sale/sharing" in text or "opt-out" in text.lower()
-    assert text.count("Needs research") == 2
+    assert "Needs research" not in text
+    assert actions_el.locator("button:has-text('Find cleanup method')").count() == 2
 
 
 def test_just_the_essentials_stage_has_no_execute_button(live_server, page):
@@ -318,6 +321,76 @@ def test_just_the_essentials_flow_uses_bakers_dozen_branding(live_server, page):
     page.click("#deletion-modal-jte-submit")
     page.wait_for_timeout(500)
     assert "Cookie Monster" not in page.locator("#deletion-modal").inner_text()
+
+
+# --- Just the Essentials research pipeline: "Find cleanup method" live click ---
+# The provider is monkeypatched to a fake (no real network access, no real
+# Amazon/company request) so these exercise the REAL click -> AJAX ->
+# server -> resolve_privacy_action -> DOM-update path in a genuine browser,
+# without ever touching the public internet during a test run.
+
+class _FakeVerifiedProvider:
+    def research(self, domain, action_type):
+        from app.deletion_constants import DeletionMethod, PrivacyActionType
+        from app.research_types import PrivacyActionResult
+
+        if action_type != PrivacyActionType.NONESSENTIAL_TRACKING_CLEANUP:
+            return None
+        url = f"https://{domain}/privacy/ad-preferences"
+        return PrivacyActionResult(
+            domain=domain, action_type=action_type, method=DeletionMethod.ACCOUNT_SETTING,
+            url=url, source_url=url, confidence="high",
+            scope_note="This can stop some future nonessential tracking, but does not confirm past data was deleted.",
+            verified=True, reasons=["fixture"],
+        )
+
+
+class _FakeNothingFoundProvider:
+    def research(self, domain, action_type):
+        return None
+
+
+def test_find_cleanup_method_click_reveals_a_verified_mechanism(live_server, page, monkeypatch):
+    monkeypatch.setattr("app.main._privacy_action_provider", _FakeVerifiedProvider())
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-jte-submit")
+    page.wait_for_timeout(500)
+
+    tracking_item = page.locator("#deletion-modal-jte-actions li", has_text="Nonessential tracking")
+    opt_out_item = page.locator("#deletion-modal-jte-actions li", has_text="Sale/sharing")
+    tracking_item.locator("button:has-text('Find cleanup method')").click()
+    page.wait_for_timeout(500)
+
+    assert tracking_item.locator("a:has-text('Open privacy settings')").count() == 1
+    assert "Ready for you" in tracking_item.inner_text()
+    assert "does not confirm" in tracking_item.inner_text().lower()
+    # The OTHER action must be completely untouched by resolving this one.
+    assert opt_out_item.locator("button:has-text('Find cleanup method')").count() == 1
+    assert "Ready for you" not in opt_out_item.inner_text()
+
+
+def test_find_cleanup_method_click_shows_needs_review_when_nothing_verified(live_server, page, monkeypatch):
+    monkeypatch.setattr("app.main._privacy_action_provider", _FakeNothingFoundProvider())
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-jte-submit")
+    page.wait_for_timeout(500)
+
+    opt_out_item = page.locator("#deletion-modal-jte-actions li", has_text="Sale/sharing")
+    opt_out_item.locator("button:has-text('Find cleanup method')").click()
+    page.wait_for_timeout(500)
+
+    text = opt_out_item.inner_text()
+    assert "Needs review" in text
+    assert "couldn't verify" in text.lower()
+    # A "Look again" retry must be offered - NEEDS_REVIEW is never terminal.
+    assert opt_out_item.locator("button:has-text('Look again')").count() == 1
+    # No internal jargon anywhere in what's shown.
+    for jargon in ("NEEDS_RESEARCH", "NEEDS_REVIEW", "PrivacyAction", "resolver"):
+        assert jargon not in text
 
 
 def test_user_step_required_flow_does_not_claim_submission(live_server, page):

@@ -160,27 +160,93 @@
     userStepEl.hidden = !showUserStep;
   }
 
-  const JTE_STATUS_LABEL = {
-    NEEDS_RESEARCH: "Needs research",
-    USER_ACTION_REQUIRED: "Needs you",
-    SUBMITTED: "Requested",
-    CONFIRMED: "Confirmed",
-    REJECTED: "Declined",
-    FAILED: "Failed",
+  // The server (app.privacy_action.just_the_essentials_review) already
+  // translates every PrivacyAction's internal status into what should be
+  // shown - status_label/explanation/cta_label/scope_note. This map only
+  // covers the ONE thing that's still a button label decision made here:
+  // whether a "find/look again" research button is offered at all, and
+  // what to call it before an in-flight request relabels it "Searching…".
+  // NEEDS_RESEARCH/NEEDS_REVIEW are the only two statuses with a button;
+  // every other status (USER_ACTION_REQUIRED, and anything beyond it) has
+  // its own cta_label/cta_url instead - never both.
+  const JTE_RESEARCH_BUTTON_LABEL = {
+    NEEDS_RESEARCH: "Find cleanup method",
+    NEEDS_REVIEW: "Look again",
   };
 
-  function renderJteActions(actions) {
+  function runJteResearch(companyId, actionType, button) {
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = "Searching…";
+    fetch("/api/companies/" + companyId + "/just-the-essentials/" + actionType + "/research", {
+      method: "POST",
+      credentials: "same-origin",
+    })
+      .then((resp) => (resp.ok ? resp.json() : null))
+      .then((data) => {
+        if (!data) throw new Error("research failed");
+        renderJteActions(companyId, data.actions);
+      })
+      .catch(() => {
+        button.disabled = false;
+        button.textContent = originalLabel;
+      });
+  }
+
+  function renderJteActions(companyId, actions) {
     const listEl = document.getElementById("deletion-modal-jte-actions");
     listEl.textContent = "";
     (actions || []).forEach((action) => {
       const item = document.createElement("li");
+
       const label = document.createElement("strong");
-      label.textContent = action.label + " — " + (JTE_STATUS_LABEL[action.status] || action.status);
+      label.textContent = action.label;
       item.appendChild(label);
+
+      if (action.status_label) {
+        const pill = document.createElement("span");
+        pill.className = "jte-status-pill";
+        pill.textContent = action.status_label;
+        item.appendChild(pill);
+      }
+
       const summary = document.createElement("p");
       summary.className = "deletion-detail";
-      summary.textContent = action.reason || action.summary || "";
+      summary.textContent = action.summary || "";
       item.appendChild(summary);
+
+      if (action.explanation) {
+        const explanation = document.createElement("p");
+        explanation.className = "deletion-detail";
+        explanation.textContent = action.explanation;
+        item.appendChild(explanation);
+      }
+
+      if (action.scope_note) {
+        const note = document.createElement("p");
+        note.className = "deletion-detail jte-scope-note";
+        note.textContent = action.scope_note;
+        item.appendChild(note);
+      }
+
+      const researchLabel = JTE_RESEARCH_BUTTON_LABEL[action.status];
+      if (researchLabel) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn btn-secondary btn-small";
+        btn.textContent = researchLabel;
+        btn.addEventListener("click", () => runJteResearch(companyId, action.action_type, btn));
+        item.appendChild(btn);
+      } else if (action.cta_url) {
+        const link = document.createElement("a");
+        link.href = action.cta_url;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.className = "btn btn-primary btn-small";
+        link.textContent = action.cta_label || "Continue cleanup";
+        item.appendChild(link);
+      }
+
       listEl.appendChild(item);
     });
   }
@@ -250,12 +316,12 @@
     if (selectedRecipe === "JUST_THE_ESSENTIALS") {
       recipeLabelEl.textContent = "Cleanup Recipe: Just the Essentials";
       jteSummaryEl.textContent = "Just the Essentials for " + name + ":";
-      renderJteActions([]);
+      renderJteActions(btn.dataset.id, []);
       fetch("/api/companies/" + btn.dataset.id + "/just-the-essentials/preview")
         .then((resp) => (resp.ok ? resp.json() : null))
         .then((data) => {
           if (!data || modal.hidden) return;
-          renderJteActions(data.actions);
+          renderJteActions(btn.dataset.id, data.actions);
         })
         .catch(() => {});
       return;

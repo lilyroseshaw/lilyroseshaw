@@ -294,14 +294,20 @@ assert set(_STATUS_OUTCOME_TABLE.keys()) == DeletionStatus.ALL, (
 
 
 # PrivacyActionStatus -> NonessentialTrackingOutcome / OptOutOutcome. Both
-# outcome vocabularies are narrower than PrivacyActionStatus (3 values vs
-# 6), so this is a many-to-few mapping, not a renaming - see each
-# comment for why. NEEDS_RESEARCH is the only status any action reaches
-# in this milestone (see app/privacy_action.py) - the rest exist so this
-# mapping is genuinely correct once real execution/evidence exists, not
-# just for today's one reachable case.
+# outcome vocabularies are narrower than PrivacyActionStatus, so this is a
+# many-to-few mapping, not a renaming - see each comment for why.
+# NEEDS_RESEARCH/NEEDS_REVIEW/USER_ACTION_REQUIRED are the statuses a
+# lookup can actually reach today (see app/privacy_action_resolver.py) -
+# SUBMITTED/CONFIRMED/REJECTED/FAILED remain unreachable until a real
+# execution mechanism exists, but stay mapped so this table is genuinely
+# correct once that evidence exists, not just for today's reachable cases.
 _TRACKING_OUTCOME_FOR_ACTION_STATUS = {
     PrivacyActionStatus.NEEDS_RESEARCH: NonessentialTrackingOutcome.UNRESOLVED,
+    # A lookup ran and found nothing safe to use - still unresolved, exactly
+    # like NEEDS_RESEARCH's "hasn't been looked at" reading; the distinction
+    # between the two is about what the USER sees (retry copy), never about
+    # this outcome axis.
+    PrivacyActionStatus.NEEDS_REVIEW: NonessentialTrackingOutcome.UNRESOLVED,
     # Not yet actually requested by Baker's Dozen - still unresolved, not
     # "requested", until a real request goes out.
     PrivacyActionStatus.USER_ACTION_REQUIRED: NonessentialTrackingOutcome.UNRESOLVED,
@@ -315,6 +321,7 @@ _TRACKING_OUTCOME_FOR_ACTION_STATUS = {
 }
 _OPT_OUT_OUTCOME_FOR_ACTION_STATUS = {
     PrivacyActionStatus.NEEDS_RESEARCH: OptOutOutcome.UNKNOWN,
+    PrivacyActionStatus.NEEDS_REVIEW: OptOutOutcome.UNKNOWN,
     PrivacyActionStatus.USER_ACTION_REQUIRED: OptOutOutcome.UNKNOWN,
     PrivacyActionStatus.SUBMITTED: OptOutOutcome.REQUESTED,
     PrivacyActionStatus.CONFIRMED: OptOutOutcome.CONFIRMED,

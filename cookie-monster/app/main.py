@@ -19,6 +19,7 @@ from app.deletion_constants import (
     EventSource,
     EventType,
     ExecutionCapability,
+    PrivacyActionType,
     RecipeChoice,
     RecipeStatus,
     ResearchFailureReason,
@@ -36,6 +37,8 @@ from app.gmail_scan import scan_inbox
 from app.mail import MailSendError, MailState, ReplyKind
 from app.models import Company, DeletionEvent, DeletionRecipe, MailMessage, PrivacyCase
 from app.privacy_action import ensure_just_the_essentials_actions, just_the_essentials_review
+from app.privacy_action_research import build_default_privacy_action_provider
+from app.privacy_action_resolver import resolve_privacy_action
 from app.privacy_case import (
     InvalidRecipeChoiceError,
     full_clean_review_copy,
@@ -45,6 +48,7 @@ from app.privacy_case import (
     just_the_essentials_intro_copy,
     select_recipe,
 )
+from app.research_search import BraveSearchBackend
 from app.response_classify import build_default_classifier
 
 app = FastAPI(title="Cookie Monster")
@@ -103,7 +107,16 @@ GMAIL_SCOPE_EXPLANATION = (
 # One shared provider/classifier instance for the process - built once from
 # .env config. Used by both the manual "Research"/"Check for responses"
 # routes and the background worker.
-_research_provider = build_default_provider()
+#
+# One BraveSearchBackend instance (and its one daily query budget) is built
+# here and handed to BOTH the Full Clean and Just the Essentials research
+# providers - each pipeline researches a genuinely different mechanism (see
+# app/privacy_action_research.py's module docstring), but they share the
+# SAME real Brave API key, so a second independent budget counter would
+# silently allow up to 2x the intended daily query cap against that key.
+_shared_brave_backend = BraveSearchBackend(config.BRAVE_SEARCH_API_KEY) if config.BRAVE_SEARCH_API_KEY else None
+_research_provider = build_default_provider(search_backend=_shared_brave_backend)
+_privacy_action_provider = build_default_privacy_action_provider(search_backend=_shared_brave_backend)
 _response_classifier = build_default_classifier()
 
 
@@ -903,9 +916,10 @@ def preview_just_the_essentials(company_id: int):
     about pursuing Just the Essentials for this company - one entry per
     PrivacyAction. Refuses (400) unless JUST_THE_ESSENTIALS is selected,
     same fail-closed gate as Full Clean's preview route. Never executes
-    anything; there is currently no verified mechanism for any company to
-    execute (see app.privacy_action's module docstring), so this is
-    purely informational."""
+    anything or triggers research itself - a PrivacyAction only advances
+    beyond NEEDS_RESEARCH via an explicit "Find cleanup method" click
+    (research_just_the_essentials_action below), never merely from
+    viewing this preview."""
     db = get_session()
     try:
         company = db.get(Company, company_id)
@@ -916,6 +930,43 @@ def preview_just_the_essentials(company_id: int):
             raise HTTPException(
                 status_code=400, detail="Choose Just the Essentials for this company before continuing."
             )
+        actions = ensure_just_the_essentials_actions(db, privacy_case)
+        return {"actions": just_the_essentials_review(company, actions)}
+    finally:
+        db.close()
+
+
+@app.post("/api/companies/{company_id}/just-the-essentials/{action_type}/research")
+def research_just_the_essentials_action(company_id: int, action_type: str):
+    """The "Find cleanup method"/"Look again" button's server side - one
+    synchronous, on-demand research attempt for a SINGLE PrivacyAction
+    (see app.privacy_action_resolver.resolve_privacy_action). Deliberately
+    not part of any background queue (no automatic JTE chase exists) - the
+    user decides when to look, same manual-only pattern as Full Clean's
+    "Research deletion method" button.
+
+    Same fail-closed JUST_THE_ESSENTIALS gate as the preview route above.
+    A verified mechanism found for ONE action never affects the other -
+    each PrivacyAction resolves completely independently, so a company can
+    truthfully end up with one actionable mechanism and one still needing
+    review."""
+    if action_type not in PrivacyActionType.ALL:
+        raise HTTPException(status_code=404, detail="Unknown privacy action type")
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        privacy_case = db.query(PrivacyCase).filter(PrivacyCase.company_id == company_id).one_or_none()
+        if privacy_case is None or privacy_case.selected_recipe != RecipeChoice.JUST_THE_ESSENTIALS:
+            raise HTTPException(
+                status_code=400, detail="Choose Just the Essentials for this company before continuing."
+            )
+        actions = ensure_just_the_essentials_actions(db, privacy_case)
+        action = next((a for a in actions if a.action_type == action_type), None)
+        if action is None:
+            raise HTTPException(status_code=404, detail="Privacy action not found")
+        resolve_privacy_action(db, action, company, _privacy_action_provider)
         actions = ensure_just_the_essentials_actions(db, privacy_case)
         return {"actions": just_the_essentials_review(company, actions)}
     finally:

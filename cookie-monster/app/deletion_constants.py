@@ -317,6 +317,17 @@ class EventType:
     # RESEARCH_FAILED, which is specifically about DeletionRecipe's
     # domain-level deletion-method research pipeline.
     PRIVACY_ACTION_NEEDS_RESEARCH = "PRIVACY_ACTION_NEEDS_RESEARCH"
+    # A "Find cleanup method"/"Look again" lookup (see
+    # app/privacy_action_resolver.py) found a verified, purpose-specific
+    # mechanism for one PrivacyAction - source=SYSTEM, evidence carries
+    # {"action_type", "method", "confidence", "source_url"}. Mirrors
+    # METHOD_DISCOVERED but scoped to a single PrivacyAction, never
+    # Full Clean's own DeletionRecipe pipeline.
+    PRIVACY_ACTION_METHOD_FOUND = "PRIVACY_ACTION_METHOD_FOUND"
+    # A "Find cleanup method"/"Look again" lookup ran but found nothing
+    # safe/verifiable to use for one PrivacyAction - mirrors RESEARCH_FAILED
+    # but scoped to a single PrivacyAction; never fabricates a mechanism.
+    PRIVACY_ACTION_NEEDS_REVIEW = "PRIVACY_ACTION_NEEDS_REVIEW"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
@@ -325,7 +336,7 @@ class EventType:
         RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED, RESEARCH_DEFERRED,
         EXECUTION_STARTED, EXECUTION_INTERRUPTED, MAIL_REPLY_SENT,
         FOLLOWUP_SENT, ACCOUNT_CLOSED_DATA_UNVERIFIED, ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
-        RECIPE_SELECTED, PRIVACY_ACTION_NEEDS_RESEARCH,
+        RECIPE_SELECTED, PRIVACY_ACTION_NEEDS_RESEARCH, PRIVACY_ACTION_METHOD_FOUND, PRIVACY_ACTION_NEEDS_REVIEW,
     }
 
 
@@ -389,21 +400,35 @@ class PrivacyActionStatus:
     """Lifecycle of one PrivacyAction - independent of, and never
     conflated with, Company.deletion_status (that's Full Clean's own
     lifecycle, for a different kind of request entirely). NEEDS_RESEARCH
-    is the honest default and, for this milestone, the only status any
-    action will ever actually reach: no verified, purpose-specific
-    mechanism source exists yet for nonessential-tracking-cleanup or
-    sale/sharing opt-out requests (unlike DeletionRecipe, which only ever
-    researches a full-deletion mechanism) - see app/privacy_action.py.
-    The rest of this vocabulary exists now so the schema is genuinely
-    ready for that research/execution work later, not half-built."""
+    is the honest default a PrivacyAction is created with - see
+    app/privacy_action.py.
+
+    As of the Just the Essentials research-pipeline milestone
+    (app/privacy_action_research.py, app/privacy_action_resolver.py), a
+    manual "Find cleanup method" lookup can move an action out of
+    NEEDS_RESEARCH: to USER_ACTION_REQUIRED when a verified, purpose-
+    specific mechanism is found (a company-controlled settings/portal
+    page - never a full-deletion mechanism repurposed for this), or to
+    NEEDS_REVIEW when the lookup ran but found nothing safe to use. Both
+    are honest, non-fabricated outcomes, not stub values. SUBMITTED/
+    CONFIRMED/REJECTED/FAILED remain unreachable this milestone - no
+    execution mechanism exists yet (opening a verified page is a user
+    hand-off, never automated submission) - but stay in this vocabulary
+    so it's genuinely ready for that work later, not half-built."""
     NEEDS_RESEARCH = "NEEDS_RESEARCH"
+    # A "Find cleanup method"/"Look again" lookup ran but found no
+    # official, verifiable mechanism to use - distinct from NEEDS_RESEARCH
+    # ("hasn't been looked at yet"). Not terminal: the user can ask Baker's
+    # Dozen to look again at any time (e.g. after the company changes its
+    # site) - see app/privacy_action_resolver.py.
+    NEEDS_REVIEW = "NEEDS_REVIEW"
     USER_ACTION_REQUIRED = "USER_ACTION_REQUIRED"
     SUBMITTED = "SUBMITTED"
     CONFIRMED = "CONFIRMED"
     REJECTED = "REJECTED"
     FAILED = "FAILED"
 
-    ALL = {NEEDS_RESEARCH, USER_ACTION_REQUIRED, SUBMITTED, CONFIRMED, REJECTED, FAILED}
+    ALL = {NEEDS_RESEARCH, NEEDS_REVIEW, USER_ACTION_REQUIRED, SUBMITTED, CONFIRMED, REJECTED, FAILED}
 
     # Portal/page opened, or a request sent, is never by itself completion -
     # same evidence-first rule Company.deletion_status already enforces.

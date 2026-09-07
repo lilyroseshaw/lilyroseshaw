@@ -1320,6 +1320,27 @@ button:disabled:hover,
 
 .jte-action-list p { margin: 4px 0 0; }
 
+.jte-status-pill {
+  display: inline-flex;
+  margin-left: 8px;
+
+  border-radius: 999px;
+  background: var(--border-soft);
+
+  padding: 2px 9px;
+
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.jte-scope-note {
+  font-style: italic;
+  color: var(--muted);
+}
+
+.jte-action-list .btn { margin-top: 8px; }
+
 .deletion-modal-actions {
   display: flex;
   justify-content: flex-end;

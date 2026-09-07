@@ -176,8 +176,9 @@ def test_unsupported_mechanism_fails_safely_never_fabricated(client_db):
     review = just_the_essentials_review(company, actions)
     for entry in review:
         assert entry["status"] == PrivacyActionStatus.NEEDS_RESEARCH
-        assert "Amazon" in entry["reason"]
-        assert "verified way" in entry["reason"]
+        assert "Amazon" in entry["explanation"]
+        assert "find" in entry["explanation"].lower()
+        assert entry["cta_url"] is None
 
 
 def test_just_the_essentials_preview_route_never_fabricates(client_db, client):

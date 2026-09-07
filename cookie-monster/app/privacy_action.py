@@ -11,29 +11,32 @@ Keep the distinctions this milestone has established throughout explicit:
   - CaseOutcome (app/case_outcome.py) = the derived interpretation of
     actual evidence across everything, computed separately.
 
-HONESTY OVER COMPLETENESS: no research pipeline exists yet that verifies
-a nonessential-tracking-cleanup or sale/sharing opt-out mechanism for any
-company (DeletionRecipe only ever researches a full-deletion mechanism -
-see deletion_resolver.py). So classify_privacy_action() always returns
-NEEDS_RESEARCH today. This is not a stub standing in for a missing
-feature; it is the accurate, non-fabricated answer given what Baker's
-Dozen actually knows right now. It must never invent a URL, repurpose
-Full Clean's verified deletion mechanism for a different declared
-purpose, or claim a category was cleaned up/opted out of without real
-evidence.
+A dedicated research pipeline (app/privacy_action_research.py,
+app/privacy_action_resolver.py) now exists to move a PrivacyAction beyond
+NEEDS_RESEARCH - see those modules for how a mechanism is discovered and
+verified. It never invents a URL, never repurposes Full Clean's verified
+deletion mechanism for a different declared purpose, and never claims a
+category was cleaned up/opted out of without real evidence.
+
+just_the_essentials_review() below is the one place PrivacyAction's raw,
+internal status/evidence is translated into what the browser actually
+shows. Internal vocabulary (NEEDS_RESEARCH, USER_ACTION_REQUIRED,
+PrivacyAction, resolver, ...) must never reach user-facing copy - only
+`status_label`/`explanation`/`cta_label`/`scope_note` are meant to be
+rendered directly; `status`/`action_type` are for the caller's own
+branching logic (see dashboard.js), never for display text.
 """
 import datetime
 
 from sqlalchemy.orm import Session
 
-from app.deletion_constants import EventSource, EventType, PrivacyActionStatus, PrivacyActionType
+from app.deletion_constants import DeletionMethod, EventSource, EventType, PrivacyActionStatus, PrivacyActionType
 from app.deletion_events import record_event
 from app.models import Company, PrivacyAction, PrivacyCase
 
 # Compact, plain-English label/explanation per action type - used by the
 # Just the Essentials review screen. Never claims a specific mechanism;
-# that's classify_privacy_action()'s job, driven by real (currently
-# nonexistent) verified data.
+# that's the research pipeline's job, driven by real verified data.
 _ACTION_COPY = {
     PrivacyActionType.NONESSENTIAL_TRACKING_CLEANUP: {
         "label": "Nonessential tracking & profiling cleanup",
@@ -49,26 +52,29 @@ _ACTION_COPY = {
     },
 }
 
+# What to call the CTA once a verified mechanism is found - specific to
+# what kind of mechanism it actually is, never a generic "Continue". See
+# the Just the Essentials research-pipeline UX requirement: no generic
+# label when a more specific action is known.
+_CTA_LABEL_BY_METHOD = {
+    DeletionMethod.ACCOUNT_SETTING: "Open privacy settings",
+    DeletionMethod.PRIVACY_PORTAL: "Open privacy settings",
+    DeletionMethod.WEB_FORM: "Continue cleanup",
+    DeletionMethod.EMAIL_REQUEST: "Continue cleanup",
+}
+_DEFAULT_CTA_LABEL = "Continue cleanup"
 
-def classify_privacy_action(company: Company, action_type: str) -> dict:
-    """The single source of truth for what Baker's Dozen currently knows
-    about pursuing `action_type` for `company` - mirrors the shape/spirit
-    of deletion_engine.classify_execution_capability, but for a
-    nonessential-tracking/opt-out mechanism instead of full deletion.
-
-    Always returns NEEDS_RESEARCH today (see module docstring) - never
-    fabricates a mechanism. Returns a plain dict (not persisted directly)
-    so callers decide what, if anything, changed on the PrivacyAction row.
-    """
-    return {
-        "status": PrivacyActionStatus.NEEDS_RESEARCH,
-        "method": None,
-        "url": None,
-        "reason": (
-            f"Baker's Dozen doesn't yet have a verified way to do this for {company.name} - "
-            "this will be tracked and revisited as research support is added."
-        ),
-    }
+# Status pill text - the ONLY user-facing rendering of a PrivacyAction's
+# status. NEEDS_RESEARCH has no pill of its own (the "Find cleanup method"
+# button IS its state) - see just_the_essentials_review.
+_STATUS_LABEL = {
+    PrivacyActionStatus.NEEDS_REVIEW: "Needs review",
+    PrivacyActionStatus.USER_ACTION_REQUIRED: "Ready for you",
+    PrivacyActionStatus.SUBMITTED: "Requested",
+    PrivacyActionStatus.CONFIRMED: "Confirmed",
+    PrivacyActionStatus.REJECTED: "Declined",
+    PrivacyActionStatus.FAILED: "Couldn't verify",
+}
 
 
 def ensure_just_the_essentials_actions(db: Session, privacy_case: PrivacyCase) -> list[PrivacyAction]:
@@ -118,16 +124,37 @@ def ensure_just_the_essentials_actions(db: Session, privacy_case: PrivacyCase) -
 def just_the_essentials_review(company: Company, actions: list[PrivacyAction]) -> list[dict]:
     """Pure, read-only review payload for the Just the Essentials preview
     screen - one entry per PrivacyAction, truthful about exactly what's
-    known today. No DB session, no writes, no mutation of its inputs."""
+    known today. No DB session, no writes, no mutation of its inputs.
+
+    `status`/`action_type` are the raw internal vocabulary, included for
+    the caller's own branching (see dashboard.js) - never meant to be
+    rendered as text. Every OTHER field here (`status_label`,
+    `explanation`, `cta_label`, `scope_note`) is exactly what the browser
+    is meant to show, with no internal jargon (NEEDS_RESEARCH,
+    USER_ACTION_REQUIRED, PrivacyAction, resolver, ...) leaking into it."""
     review = []
     for action in sorted(actions, key=lambda a: a.action_type):
         copy = _ACTION_COPY.get(action.action_type, {"label": action.action_type, "summary": ""})
-        plan = classify_privacy_action(company, action.action_type)
-        review.append({
+        entry = {
             "action_type": action.action_type,
+            "status": action.status,
             "label": copy["label"],
             "summary": copy["summary"],
-            "status": action.status,
-            "reason": plan["reason"] if action.status == PrivacyActionStatus.NEEDS_RESEARCH else None,
-        })
+            "status_label": _STATUS_LABEL.get(action.status),
+            "explanation": None,
+            "cta_label": None,
+            "cta_url": None,
+            "scope_note": None,
+        }
+        if action.status == PrivacyActionStatus.NEEDS_RESEARCH:
+            entry["explanation"] = f"Baker's Dozen needs to find {company.name}'s verified method for this."
+        elif action.status == PrivacyActionStatus.NEEDS_REVIEW:
+            entry["explanation"] = (
+                f"Baker's Dozen couldn't verify a safe method for this yet for {company.name}."
+            )
+        elif action.status == PrivacyActionStatus.USER_ACTION_REQUIRED:
+            entry["cta_label"] = _CTA_LABEL_BY_METHOD.get(action.method, _DEFAULT_CTA_LABEL)
+            entry["cta_url"] = action.url
+            entry["scope_note"] = (action.evidence or {}).get("scope_note")
+        review.append(entry)
     return review
