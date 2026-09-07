@@ -422,6 +422,14 @@ def test_account_scoped_deletion_never_independently_completes():
         "The ticket has been deleted.",
         "We have deleted your account.",
         "We deleted your account and its details.",
+        # Same false-positive class, one level deeper: "account
+        # information"/"account data" is the ACCOUNT's own record, not
+        # the user's personal data more broadly - a bare, unqualified
+        # "(information|data)" match inside COMPLETED_PATTERNS must not
+        # fire merely because the word "account" happens to precede it.
+        "Your account data has been removed.",
+        "Your account information has been deleted.",
+        "The account record data has been removed.",
     ]
     for text in texts:
         result = ResponseClassifier().classify(text)
@@ -450,6 +458,135 @@ def test_account_deletion_plus_explicit_personal_data_resolves_completed():
     result = ResponseClassifier().classify(
         "We deleted your account and all personal information associated with you."
     )
+    assert result.status == DeletionStatus.COMPLETED
+
+
+# =========================================================================
+# Broader/more-specific deletion evidence must outrank narrower
+# account-record wording - a real live gap found via Goop Kitchen.
+#
+# Baker's Dozen correctly held ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED and
+# was chasing for exactly one clarification: whether personal information
+# OUTSIDE the account record was also deleted. Goop's follow-up reply gave
+# exactly that clarification, but was still classified as
+# ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED - because a claim phrased as
+# "...associated with your account has been deleted" only ever matched
+# the narrower, account-scoped pattern, even when the SAME reply went on
+# to explicitly broaden scope beyond the account record. Baker's Dozen
+# then sent another automatic follow-up ~1.6 seconds later asking a
+# question the company had just answered.
+#
+# Every fabricated wording below proves this is general classifier
+# behavior, not a Goop-specific phrase hack - see
+# _match_broadened_account_scoped_completion in app/response_classify.py.
+# =========================================================================
+
+GOOP_BROAD_DELETION_REPLY = (
+    "Hi Lily,\n\n"
+    "Thank you for reaching out, and we sincerely apologize for any confusion regarding your data deletion request.\n\n"
+    "We can confirm that all personal information associated with your account has been deleted from our system, "
+    "including information maintained outside of the account record. There is no remaining personal information "
+    "associated with your account in our system.\n\n"
+    "We appreciate your patience and understanding, and please don’t hesitate to reach out if you have any "
+    "further questions."
+)
+
+
+def test_real_goop_broad_deletion_reply_is_completed():
+    """The exact live reply that was misclassified - must now resolve to
+    the existing, evidence-backed Full Clean COMPLETED status."""
+    result = ResponseClassifier().classify(GOOP_BROAD_DELETION_REPLY)
+    assert result.status == DeletionStatus.COMPLETED
+    assert result.confidence == "high"
+
+
+def test_account_scoped_claim_broadened_by_outside_account_record_completes():
+    text = (
+        "We can confirm that all personal information associated with your account has been deleted from our "
+        "system, including information maintained outside of the account record."
+    )
+    result = ResponseClassifier().classify(text)
+    assert result.status == DeletionStatus.COMPLETED
+
+
+def test_no_remaining_personal_information_in_our_system_completes():
+    text = "There is no remaining personal information associated with your account in our system."
+    assert ResponseClassifier().classify(text).status == DeletionStatus.COMPLETED
+
+    text2 = "No personal information associated with you remains in our systems."
+    assert ResponseClassifier().classify(text2).status == DeletionStatus.COMPLETED
+
+
+def test_account_information_and_other_personal_information_completes():
+    result = ResponseClassifier().classify(
+        "Account information and other personal information have been deleted."
+    )
+    assert result.status == DeletionStatus.COMPLETED
+
+
+def test_all_personal_data_we_maintain_about_you_completes():
+    result = ResponseClassifier().classify("All personal data we maintain about you has been deleted.")
+    assert result.status == DeletionStatus.COMPLETED
+
+
+def test_account_deleted_only_remains_insufficient():
+    result = ResponseClassifier().classify("Your account has been deleted.")
+    assert result.status != DeletionStatus.COMPLETED
+
+
+def test_account_details_deleted_only_remains_insufficient():
+    result = ResponseClassifier().classify("Your account and its details have been deleted.")
+    assert result.status != DeletionStatus.COMPLETED
+
+
+def test_all_information_in_the_account_deleted_remains_insufficient():
+    result = ResponseClassifier().classify("All information in your account has been deleted.")
+    assert result.status != DeletionStatus.COMPLETED
+
+
+def test_ambiguous_information_associated_with_account_deleted_remains_insufficient():
+    """Without any additional, explicit broadening statement elsewhere in
+    the reply, this stays exactly where it was: an account-scoped claim,
+    never COMPLETED."""
+    result = ResponseClassifier().classify(
+        "The information associated with your account has been deleted."
+    )
+    assert result.status != DeletionStatus.COMPLETED
+    assert result.status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+
+
+def test_quoted_outgoing_broad_deletion_language_cannot_cause_completion():
+    """The broadened-completion check runs on the SAME already-quote-
+    stripped text as every other pattern in this file - it must never see
+    Baker's Dozen's own outgoing request text (which may itself use broad
+    "outside the account record" language when asking the company for
+    clarification) and mistake it for the company's answer."""
+    from app.deletion_response_tracker import strip_quoted_reply
+
+    raw = (
+        "Please let us know soon.\n\n"
+        "On Mon, Jan 1, 2024, Baker's Dozen wrote:\n"
+        "> We are asking whether all personal information associated with your account has been deleted,\n"
+        "> including information maintained outside of the account record.\n"
+    )
+    stripped = strip_quoted_reply(raw)
+    result = ResponseClassifier().classify(stripped)
+    assert result.status != DeletionStatus.COMPLETED
+
+
+def test_new_broad_confirmation_outranks_narrower_account_wording_in_same_reply():
+    """A single authored reply that ALSO contains narrower account-record
+    wording elsewhere (which alone would resolve to
+    ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED) must still resolve to
+    COMPLETED once the same reply explicitly broadens scope - the
+    broadened check is checked ahead of _PATTERN_ORDER for exactly this
+    reason."""
+    text = (
+        "The account associated with your email has been deleted. Separately, we can confirm that all personal "
+        "information associated with your account has been deleted from our system, including information "
+        "maintained outside of the account record."
+    )
+    result = ResponseClassifier().classify(text)
     assert result.status == DeletionStatus.COMPLETED
 
 

@@ -53,11 +53,32 @@ COMPLETED_PATTERNS = [
     # Passive voice, object required: "your personal information/data has
     # been deleted", "all personal information associated with you has
     # been deleted", "personal data has been permanently deleted", "the
-    # information we hold about you has been erased". Optional "all"/
-    # "your" prefix and an optional "associated with you"/"we hold/held/
-    # have about you" qualifier both still require the core object to be
-    # (personal) information/data - never a bare "has been deleted".
-    r"(all |your )?(personal )?(information|data)( associated with you| we (hold|held|have) (about|on) you)? (has been|have been) (permanently )?(deleted|removed|erased)",
+    # information we hold/maintain about you has been erased". Optional
+    # "all"/"your" prefix and an optional "associated with you"/"we hold/
+    # held/have/maintain about you" qualifier both still require the core
+    # object to be (personal) information/data - never a bare "has been
+    # deleted". `(?<!account )(?<!account record )` guard the object
+    # itself: without them, this pattern's free-floating search would also
+    # match "data"/"information" inside "account data"/"account
+    # information"/"account record data" (e.g. "Your account data has been
+    # removed.", "The account record data has been removed.") - a real,
+    # fabricated-but-realistic false positive an audit of this exact
+    # object-matching style found, since re.search never requires the word
+    # immediately before a match to be anything in particular. "account
+    # (record) information/data" is the ACCOUNT's own record, not the
+    # user's personal data more broadly - that stays
+    # ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, same as every other
+    # account-scoped-only claim in this file.
+    r"(all |your )?(personal )?(?<!account )(?<!account record )(information|data)( associated with you| we (hold|held|have|maintain) (about|on) you)? (has been|have been) (permanently )?(deleted|removed|erased)",
+    # A company-wide negative claim - "no (remaining) personal information
+    # ... in our system(s)" - is, by itself, as strong as an affirmative
+    # "all your data has been deleted": it explicitly asserts nothing is
+    # left ANYWHERE in the company's system, not merely that an account
+    # record was removed. "in our system(s)" is the key broadening signal
+    # here (as opposed to "in your account"/"in this account", which stays
+    # account-scoped) - see _BEYOND_ACCOUNT_RECORD_PATTERNS below for the
+    # sibling signal used to promote an otherwise account-scoped claim.
+    rf"\bno (remaining )?(personal )?(information|data){_NOT_SENTENCE_BREAK}{{0,60}}\bin our systems?\b",
     # Active voice, object required after "your" (previously missing -
     # this is what let "we deleted your account" through as COMPLETED).
     r"we (have )?(successfully )?deleted (all )?your (personal )?(information|data)\b",
@@ -157,6 +178,41 @@ ACCOUNT_CLOSED_DATA_UNVERIFIED_PATTERNS = [
 ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED_PATTERNS = [
     rf"delet(ed|ing){_NOT_SENTENCE_BREAK}{{0,40}}\b(account|profile|membership)\b",
     rf"\b(account|profile|membership)\b{_NOT_SENTENCE_BREAK}{{0,110}}\bdelet(ed|ing)\b",
+]
+
+# A real live gap found via Goop Kitchen: Baker's Dozen had correctly held
+# ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED and was chasing for exactly one
+# thing - confirmation that personal information OUTSIDE the account
+# record was also deleted. Goop's follow-up reply gave exactly that
+# clarification ("...has been deleted from our system, including
+# information maintained outside of the account record...") but the
+# narrower "...associated with your account has been deleted" clause,
+# read alone, still only matches ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED_
+# PATTERNS above - so the reply that WAS the requested clarification kept
+# getting classified as if it weren't.
+#
+# _ACCOUNT_SCOPED_PERSONAL_DATA_DELETED_PATTERNS names this exact narrower
+# claim (personal data described only as "associated with your account"),
+# and _BEYOND_ACCOUNT_RECORD_PATTERNS names an explicit statement that
+# deletion is NOT limited to the account record. Neither is added to
+# COMPLETED_PATTERNS on its own - see _match_broadened_account_scoped_
+# completion below for why BOTH are required together, and why that is
+# still deterministic, general classifier behavior rather than a
+# Goop-specific phrase hack.
+_ACCOUNT_SCOPED_PERSONAL_DATA_DELETED_PATTERNS = [
+    r"(all |your )?(personal )?(information|data) associated with (your |the )?account "
+    r"(has been|have been) (permanently )?(deleted|removed|erased)",
+]
+
+# Deliberately specific phrasing - "outside"/"beyond"/"regardless of"/"not
+# limited to" the account (record) - never generic reassurance language
+# ("your information is protected", "handled securely"), which is not
+# deletion evidence anywhere in this file (see
+# ACCOUNT_CLOSED_DATA_UNVERIFIED_PATTERNS's own docstring on that).
+_BEYOND_ACCOUNT_RECORD_PATTERNS = [
+    r"outside (of )?(the |your )?account( record)?\b",
+    r"beyond (the |your )?account( record)?\b",
+    r"(regardless of|independent of|not (limited|restricted) to) (the |your )?account\b",
 ]
 
 VERIFICATION_NEEDED_PATTERNS = [
@@ -265,6 +321,38 @@ def _quote_around(text: str, pattern: str) -> str:
     return text[start:end].strip()[:MAX_QUOTE_LEN]
 
 
+def _match_broadened_account_scoped_completion(text_lower: str) -> tuple[str, str] | None:
+    """Returns (claim_pattern, scope_pattern) only when the message
+    contains BOTH an account-scoped personal-data-deletion claim AND an
+    explicit statement that deletion extends beyond the account record -
+    see _ACCOUNT_SCOPED_PERSONAL_DATA_DELETED_PATTERNS/_BEYOND_ACCOUNT_
+    RECORD_PATTERNS above for why neither half is sufficient alone. A
+    message with only the narrower claim (e.g. "we deleted the information
+    associated with your account.") returns None here and falls through
+    to ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED_PATTERNS unchanged."""
+    claim = _find_match(text_lower, _ACCOUNT_SCOPED_PERSONAL_DATA_DELETED_PATTERNS)
+    if claim is None:
+        return None
+    scope = _find_match(text_lower, _BEYOND_ACCOUNT_RECORD_PATTERNS)
+    if scope is None:
+        return None
+    return claim, scope
+
+
+def _quote_span(text: str, pattern_a: str, pattern_b: str) -> str:
+    """Same idea as _quote_around, but spans BOTH matches (the narrower
+    claim and the explicit broadening statement) so the stored evidence
+    shows why this resolved to COMPLETED rather than only one half."""
+    text_lower = text.lower()
+    match_a = re.search(pattern_a, text_lower)
+    match_b = re.search(pattern_b, text_lower)
+    if not match_a or not match_b:
+        return text[:MAX_QUOTE_LEN]
+    start = max(0, min(match_a.start(), match_b.start()) - 20)
+    end = min(len(text), max(match_a.end(), match_b.end()) + 20)
+    return text[start:end].strip()[:MAX_QUOTE_LEN]
+
+
 class ResponseClassifier:
     def __init__(self, llm_client=None, llm_model: str | None = None):
         self._llm_client = llm_client
@@ -289,6 +377,22 @@ class ResponseClassifier:
         # a match found in normalized text with offsets into the raw one.
         normalized = _normalize_whitespace(message_text)
         text_lower = normalized.lower()
+
+        # Checked BEFORE _PATTERN_ORDER (i.e. ahead of even
+        # ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED_PATTERNS, which would
+        # otherwise also match the narrower claim half of this) - broader,
+        # more explicit deletion evidence must always outrank narrower
+        # account-record wording elsewhere in the same reply. See
+        # _match_broadened_account_scoped_completion's docstring.
+        broadened = _match_broadened_account_scoped_completion(text_lower)
+        if broadened is not None:
+            claim_pattern, scope_pattern = broadened
+            return ResponseClassification(
+                status=DeletionStatus.COMPLETED, confidence="high",
+                quote=_quote_span(normalized, claim_pattern, scope_pattern),
+                reasons=[f"matched /{claim_pattern}/ broadened by /{scope_pattern}/"],
+            )
+
         for status, patterns in _PATTERN_ORDER:
             match = _find_match(text_lower, patterns)
             if match:

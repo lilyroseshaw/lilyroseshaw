@@ -1633,3 +1633,66 @@ def test_account_record_deleted_followup_asks_about_data_outside_account_record(
     assert "outside" in body
     assert "retained" in body
     assert "attempt" not in body  # internal counter never shown to the company
+
+
+# =========================================================================
+# Live-order chase-safety regression: the exact sequence the real Goop
+# Kitchen incident produced. Baker's Dozen was correctly holding
+# ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED and chasing for confirmation that
+# personal information outside the account record was also deleted. Goop's
+# new authored reply WAS that confirmation - but got classified right back
+# into ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED (a still-chase-eligible
+# status), so a follow-up already due fired again ~1.6 seconds later,
+# asking a question the company had just answered.
+#
+# This is a classification bug, not a chase-engine bug: chase_engine.
+# on_reply_classified already clears waiting_on/next_followup_at for any
+# terminal status (see derive_waiting_on's own "COMPLETED, FAILED, or
+# anything else - resolved/terminal, not chased" fallthrough). Once
+# response_classify.py resolves this reply to COMPLETED, the existing
+# chase machinery requires no changes at all - this test proves that by
+# running check_company_response and chase_engine.process_followups back
+# to back, exactly as the background worker does.
+# =========================================================================
+
+GOOP_BROAD_DELETION_REPLY_TEXT = (
+    "Hi Lily,\n\n"
+    "Thank you for reaching out, and we sincerely apologize for any confusion regarding your data deletion request.\n\n"
+    "We can confirm that all personal information associated with your account has been deleted from our system, "
+    "including information maintained outside of the account record. There is no remaining personal information "
+    "associated with your account in our system.\n\n"
+    "We appreciate your patience and understanding, and please don’t hesitate to reach out if you have any "
+    "further questions."
+)
+
+
+def test_broad_deletion_reply_processed_before_due_followup_sends_no_followup(db):
+    """The live ordering: (1) company starts ACCOUNT_RECORD_DELETED_DATA_
+    UNVERIFIED, waiting_on=COMPANY, a follow-up already due; (2) the new
+    tracked-thread reply with explicit broad deletion confirmation arrives
+    and is processed; (3) status becomes COMPLETED; (4) chase evaluation
+    runs; (5) NO follow-up is sent."""
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        waiting_on=WaitingOn.COMPANY, next_followup_at=datetime.datetime(2020, 1, 1),
+        deletion_last_response_message_id="m1",
+    )
+    old_message = _msg("m1", "The account associated with your email has been deleted.", "privacy@goop.com", 1_600_000_000_000)
+    new_message = _msg("m2", GOOP_BROAD_DELETION_REPLY_TEXT, "privacy@goop.com", 1_700_000_000_000)
+
+    with patch("app.google_oauth.fetch_thread_messages", return_value=[old_message, new_message]):
+        outcome = check_company_response(
+            db, company, creds=MagicMock(), gmail_address="me@gmail.com", classifier=ResponseClassifier(),
+        )
+
+    assert outcome == CHECK_RESULT_NEW_MESSAGE
+    assert company.deletion_status == DeletionStatus.COMPLETED
+    assert company.waiting_on is None
+    assert company.next_followup_at is None
+
+    with patch("app.chase_engine._send_followup_email") as mock_send:
+        sent = chase_engine.process_followups(db, creds=MagicMock(), gmail_address="me@gmail.com")
+
+    assert sent == 0
+    mock_send.assert_not_called()
+    assert company not in chase_engine.get_companies_due_for_followup(db)
