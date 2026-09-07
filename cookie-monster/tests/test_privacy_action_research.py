@@ -16,6 +16,7 @@ from app.privacy_action_research import (
     PrivacyMechanismSourceBlocked,
     PrivacyMechanismUnverified,
     WebPrivacyActionResearchProvider,
+    _is_exact_official_host,
     scope_note_for,
     verify_mechanism,
 )
@@ -371,3 +372,223 @@ def test_amazon_shaped_tracking_and_opt_out_mixed_outcome():
     assert tracking_result.scope_note  # truthfully caveated, never a bare "done"
 
     assert opt_out_result is None  # honestly unresolved - never fabricated
+
+
+# --- Live-Amazon-test regression: a related corporate domain (aws.amazon.com
+# for amazon.com's own consumer service) must never be accepted as a
+# verified mechanism just because it shares a registrable root, discusses
+# the relevant privacy law, or carries privacy keywords. Fixtures below use
+# "amazon-fixture.com"/"aws.amazon-fixture.com" as an explicitly FABRICATED
+# stand-in shaped like the real bug - never a request to any real domain.
+
+def test_related_corporate_domain_alone_is_insufficient():
+    """Same registrable root (amazon-fixture.com) is NOT the same host as
+    the target's own canonical site - a related corporate subdomain must
+    fail verification with no referral, even though normalize_domain()
+    would collapse both to the same registrable root."""
+    result = PrivacyActionResult(
+        domain="amazon-fixture.com", action_type=PrivacyActionType.SALE_SHARING_OPT_OUT,
+        method=DeletionMethod.WEB_FORM,
+        source_url="https://aws.amazon-fixture.com/compliance/california-consumer-privacy-act/",
+        referring_official_url=None,
+    )
+    assert verify_mechanism("amazon-fixture.com", result) is False
+
+
+def test_is_exact_official_host_rejects_related_subdomains():
+    assert _is_exact_official_host("amazon-fixture.com", "amazon-fixture.com") is True
+    assert _is_exact_official_host("amazon-fixture.com", "www.amazon-fixture.com") is True
+    assert _is_exact_official_host("amazon-fixture.com", "aws.amazon-fixture.com") is False
+    assert _is_exact_official_host("google-fixture.com", "cloud.google-fixture.com") is False
+
+
+def test_informational_compliance_page_is_not_an_actionable_mechanism_end_to_end():
+    """An affiliate compliance/informational page discussing the relevant
+    privacy law (CCPA, "california privacy rights") in depth, discoverable
+    only via search (never linked from the target's own official page),
+    must never resolve as a verified mechanism - discussing the law and
+    carrying privacy keywords is not evidence it applies to the target
+    consumer service."""
+    domain = "amazon-fixture.com"
+    brave = _FakeBrave()
+    hit = SearchHit(
+        url="https://aws.amazon-fixture.com/compliance/california-consumer-privacy-act/",
+        title="AWS CCPA Compliance", snippet="",
+    )
+    for q in [
+        f'site:{domain} ("do not sell" OR "do not sell or share" OR "opt-out of sale")',
+        f'site:{domain} ("your privacy choices" OR "california privacy rights" OR CCPA)',
+        f'site:{domain} ("targeted advertising opt-out" OR "global privacy control")',
+    ]:
+        brave.hits_by_query[q] = [hit]
+
+    def router(request):
+        if request.url.host == domain:
+            return httpx.Response(403)  # Tier A: the target's own site is unreachable in this scenario
+        return httpx.Response(
+            200, headers={"content-type": "text/html"},
+            text=(
+                "<html><body><p>This page explains AWS's compliance posture under the California "
+                "Consumer Privacy Act (CCPA) and your privacy choices as an AWS customer regarding "
+                "the sale or sharing of information and targeted advertising opt-out requests.</p>"
+                "</body></html>"
+            ),
+        )
+
+    from app.research_fetch import PageFetcher
+    client = httpx.Client(transport=httpx.MockTransport(router), base_url=f"https://{domain}")
+    provider = WebPrivacyActionResearchProvider(fetcher=PageFetcher(client=client), search_backend=brave)
+
+    with pytest.raises(PrivacyMechanismUnverified) as exc_info:
+        provider.research(domain, PrivacyActionType.SALE_SHARING_OPT_OUT)
+    # Kept only as a manual-review lead, never as a verified mechanism.
+    assert exc_info.value.url == "https://aws.amazon-fixture.com/compliance/california-consumer-privacy-act/"
+
+
+def test_mechanism_must_apply_to_target_service_not_merely_official_domain_family():
+    """Even when the affiliate page IS reachable (no 403) and matches every
+    textual signal, sharing the corporate family alone must never be
+    enough - verify_mechanism must reject it regardless of reachability."""
+    domain = "amazon-fixture.com"
+
+    def router(request):
+        if request.url.host == domain:
+            return httpx.Response(404)  # nothing on the target's own site
+        return httpx.Response(
+            200, headers={"content-type": "text/html"},
+            text="<html><body><p>Do not sell or share: your privacy choices as an AWS customer.</p></body></html>",
+        )
+
+    from app.research_fetch import PageFetcher
+    brave = _FakeBrave()
+    for q in [
+        f'site:{domain} ("do not sell" OR "do not sell or share" OR "opt-out of sale")',
+        f'site:{domain} ("your privacy choices" OR "california privacy rights" OR CCPA)',
+        f'site:{domain} ("targeted advertising opt-out" OR "global privacy control")',
+    ]:
+        brave.hits_by_query[q] = [SearchHit(url="https://aws.amazon-fixture.com/privacy-choices", title="AWS", snippet="")]
+
+    client = httpx.Client(transport=httpx.MockTransport(router), base_url=f"https://{domain}")
+    provider = WebPrivacyActionResearchProvider(fetcher=PageFetcher(client=client), search_backend=brave)
+
+    with pytest.raises(PrivacyMechanismUnverified):
+        provider.research(domain, PrivacyActionType.SALE_SHARING_OPT_OUT)
+
+
+def test_amazon_like_fixture_prefers_consumer_privacy_control_over_affiliate_compliance_explainer():
+    """Regression for the exact live-test finding: NONESSENTIAL_TRACKING_CLEANUP
+    correctly found the real consumer mechanism, but SALE_SHARING_OPT_OUT
+    incorrectly resolved to an AWS compliance page. Here, the target's OWN
+    homepage links directly to its real "Your Ads Privacy Choices"-shaped
+    consumer control (covering both personalized advertising AND
+    cross-context behavioral advertising / sale-sharing opt-out), while an
+    unrelated AWS-shaped compliance explainer is ALSO discoverable via
+    search under the same registrable root. The resolver must prefer the
+    genuinely applicable consumer mechanism for BOTH action types and never
+    the affiliate page."""
+    domain = "amazon-fixture.com"
+    home_html = '<html><body><a href="/adprefs">Your Ads Privacy Choices</a></body></html>'
+    ads_privacy_html = (
+        "<html><body><p>Your Ads Privacy Choices lets you manage personalized advertising and "
+        "exercise your right to opt-out of the sale or sharing of your information for cross-context "
+        "behavioral advertising.</p></body></html>"
+    )
+    aws_compliance_html = (
+        "<html><body><p>AWS California Consumer Privacy Act compliance: your privacy choices, "
+        "do not sell or share, targeted advertising opt-out for AWS services.</p></body></html>"
+    )
+
+    def router(request):
+        if request.url.host == domain:
+            if request.url.path == "/":
+                return httpx.Response(200, headers={"content-type": "text/html"}, text=home_html)
+            if request.url.path == "/adprefs":
+                return httpx.Response(200, headers={"content-type": "text/html"}, text=ads_privacy_html)
+            return httpx.Response(404)
+        return httpx.Response(200, headers={"content-type": "text/html"}, text=aws_compliance_html)
+
+    brave = _FakeBrave()
+    for q in [
+        f'site:{domain} ("do not sell" OR "do not sell or share" OR "opt-out of sale")',
+        f'site:{domain} ("your privacy choices" OR "california privacy rights" OR CCPA)',
+        f'site:{domain} ("targeted advertising opt-out" OR "global privacy control")',
+    ]:
+        brave.hits_by_query[q] = [SearchHit(url="https://aws.amazon-fixture.com/compliance", title="AWS Compliance", snippet="")]
+
+    from app.research_fetch import PageFetcher
+    client = httpx.Client(transport=httpx.MockTransport(router), base_url=f"https://{domain}")
+    fetcher = PageFetcher(client=client)
+    provider = WebPrivacyActionResearchProvider(fetcher=fetcher, search_backend=brave)
+
+    tracking_result = provider.research(domain, PrivacyActionType.NONESSENTIAL_TRACKING_CLEANUP)
+    opt_out_result = provider.research(domain, PrivacyActionType.SALE_SHARING_OPT_OUT)
+
+    for result, label in ((tracking_result, "tracking"), (opt_out_result, "opt_out")):
+        assert result is not None, f"{label} should have found the real consumer mechanism"
+        assert result.verified is True
+        assert result.source_url == f"https://{domain}/adprefs", (
+            f"{label} incorrectly resolved to {result.source_url!r} instead of the target's own page"
+        )
+        assert "aws" not in result.source_url.lower()
+
+    # Tier B was never even needed - Tier A's own exact-host page satisfied
+    # both action types on its own, so the affiliate page was never reached.
+    assert brave.queries_made == []
+
+
+def test_one_applicable_mechanism_supports_multiple_action_types_independently():
+    """A single, genuinely applicable exact-host page whose official
+    evidence actually covers both concerns (personalized advertising AND
+    cross-context behavioral advertising) may legitimately verify for BOTH
+    PrivacyActionTypes - each resolved independently, each with its OWN
+    correct, distinct scope note."""
+    domain = "onepage-fixture.com"
+    home_html = '<html><body><a href="/privacy/ad-preferences">Privacy Choices</a></body></html>'
+    page_html = (
+        "<html><body><p>Manage your personalized advertising preferences and exercise your "
+        "right to opt-out of the sale or sharing of your information for cross-context "
+        "behavioral advertising, all from this one page.</p></body></html>"
+    )
+
+    def handler(request):
+        if request.url.path == "/":
+            return httpx.Response(200, headers={"content-type": "text/html"}, text=home_html)
+        if request.url.path == "/privacy/ad-preferences":
+            return httpx.Response(200, headers={"content-type": "text/html"}, text=page_html)
+        return httpx.Response(404)
+
+    provider = _provider(domain, handler)
+    tracking_result = provider.research(domain, PrivacyActionType.NONESSENTIAL_TRACKING_CLEANUP)
+    opt_out_result = provider.research(domain, PrivacyActionType.SALE_SHARING_OPT_OUT)
+
+    assert tracking_result is not None and tracking_result.verified is True
+    assert opt_out_result is not None and opt_out_result.verified is True
+    assert tracking_result.source_url == opt_out_result.source_url == f"https://{domain}/privacy/ad-preferences"
+    # Each keeps its OWN truthful, distinct scope note - never conflated.
+    assert tracking_result.scope_note == TRACKING_CLEANUP_SCOPE_NOTE
+    assert opt_out_result.scope_note == OPT_OUT_SCOPE_NOTE
+    assert tracking_result.scope_note != opt_out_result.scope_note
+
+
+def test_existing_same_domain_mechanism_still_verifies_after_the_fix():
+    """Regression guard: the straightforward, common case (a mechanism on
+    the target's own exact domain) must still work exactly as before."""
+    result = PrivacyActionResult(
+        domain="shopexample.com", action_type=PrivacyActionType.NONESSENTIAL_TRACKING_CLEANUP,
+        method=DeletionMethod.WEB_FORM, source_url="https://shopexample.com/cookie-preferences",
+    )
+    assert verify_mechanism("shopexample.com", result) is True
+
+
+def test_existing_officially_linked_third_party_portal_still_verifies_after_the_fix():
+    """Regression guard: a genuinely linked third-party CMP portal, reached
+    via the target's own exact-host page, must still verify - the fix only
+    tightens what counts as "the target's own page," not the separate,
+    already-strict third-party-referral rule."""
+    result = PrivacyActionResult(
+        domain="shopexample.com", action_type=PrivacyActionType.NONESSENTIAL_TRACKING_CLEANUP,
+        method=DeletionMethod.PRIVACY_PORTAL,
+        source_url="https://privacyportal.onetrust.com/webform/shopexample-cookies",
+        referring_official_url="https://shopexample.com/cookies",
+    )
+    assert verify_mechanism("shopexample.com", result) is True

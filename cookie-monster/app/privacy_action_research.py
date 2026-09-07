@@ -14,10 +14,15 @@ here, and never writes to them.
 Same safety/verification philosophy as deletion_research.py:
   - Tier A (same-domain crawl, always on) before Tier B (Brave Search,
     optional, only after Tier A fails).
-  - A result is only VERIFIED if its source is the company's own domain, or
-    a third-party portal explicitly linked to from an already domain-
-    verified official page (see verify_mechanism) - never an arbitrary
-    search result, blog, aggregator, or data-broker site.
+  - A result is only VERIFIED if its source is the target's own EXACT
+    canonical host (domain itself or its `www.` prefix - see
+    _is_exact_official_host), or a mechanism explicitly linked to from an
+    already exact-host-verified official page (see verify_mechanism) -
+    never an arbitrary search result, blog, aggregator, data-broker site,
+    or a related corporate-family domain that merely shares the target's
+    registrable root (aws.amazon.com is not amazon.com's own consumer
+    mechanism just because both fall under amazon.com; cloud.google.com
+    is not a Google consumer product's own mechanism either).
   - No LLM/AI extraction - regex/keyword heuristics only (deliberately no
     Pass 2, unlike research_extract.py's optional LLM pass - see the Just
     the Essentials research-pipeline scope guard: no AI/LLM dependencies).
@@ -37,7 +42,6 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlparse
 
 from app import config
-from app.classifier import normalize_domain
 from app.deletion_constants import DeletionMethod, PrivacyActionType, SourceType
 from app.research_fetch import PageContent, PageFetcher
 from app.research_search import BraveBudgetExhausted, SearchBackend, search_hits_to_candidates
@@ -91,6 +95,14 @@ _ANCHOR_KEYWORDS = {
     PrivacyActionType.NONESSENTIAL_TRACKING_CLEANUP: [
         "cookie", "tracking", "ad preferences", "advertising preferences",
         "personalized ads", "ad choices", "analytics preferences",
+        # A combined "(Your) (Ads) Privacy Choices"-named page commonly
+        # covers personalized-advertising controls too, not just sale/
+        # sharing opt-out (e.g. the real-world Amazon.com consumer
+        # mechanism is named exactly this) - discoverable from either
+        # action type's own homepage-link scan, never assumed to apply
+        # without the page's own text separately matching this action
+        # type's signal patterns (see _extract_from_page).
+        "privacy choices",
     ],
     PrivacyActionType.SALE_SHARING_OPT_OUT: [
         "do not sell", "privacy choices", "opt-out", "opt out", "ccpa", "privacy rights",
@@ -150,21 +162,42 @@ class PrivacyMechanismUnverified(Exception):
         super().__init__(f"unverified candidate: {url}")
 
 
+def _is_exact_official_host(domain: str, netloc: str) -> bool:
+    """True only for the target's OWN canonical host - `domain` itself or
+    its `www.` prefix - never any other subdomain, even one sharing the
+    same registrable root.
+
+    Deliberately NOT normalize_domain() equality: normalize_domain()
+    collapses any subdomain to its registrable root by design (mail.
+    notifications.amazon.com -> amazon.com), which is correct for
+    classifying Gmail sender evidence but wrong here - it would treat
+    aws.amazon.com as "the same site" as amazon.com, or cloud.google.com
+    as "the same site" as google.com, purely because they share a
+    corporate parent domain. Same corporate family is not evidence that a
+    page applies to the specific consumer service/company being cleaned -
+    see this module's verify_mechanism docstring."""
+    netloc = netloc.lower()
+    return netloc == domain or netloc == f"www.{domain}"
+
+
 def verify_mechanism(domain: str, result: PrivacyActionResult) -> bool:
-    """Same official-source rule as deletion_research.py's verify_recipe:
-    a result is only trusted if it comes from the company's own domain, or
-    a third-party portal reached via a link on an already domain-verified
-    official page. An arbitrary search result, blog, aggregator, or
-    data-broker site is never accepted, no matter how plausible its
-    content looks."""
+    """A result is only trusted if it comes from the target's own exact
+    canonical host (never merely a related corporate domain sharing the
+    same registrable root - see _is_exact_official_host), or a mechanism
+    reached via a link on an already exact-host-verified official page.
+    An arbitrary search result, blog, aggregator, data-broker site, OR a
+    same-company-family-but-different-service page (an AWS compliance
+    page when the company being cleaned is amazon.com's retail service, a
+    Google Cloud page when it's a Google consumer product, ...) is never
+    accepted just because it discusses the relevant privacy law, contains
+    privacy keywords, or shares a corporate parent - it must actually be
+    the target's own page, or explicitly linked from it."""
     if not result.source_url or not result.source_url.startswith("https://"):
         return False
-    source_domain = normalize_domain(urlparse(result.source_url).netloc)
-    if source_domain == domain:
+    if _is_exact_official_host(domain, urlparse(result.source_url).netloc):
         return True
     if result.referring_official_url:
-        referring_domain = normalize_domain(urlparse(result.referring_official_url).netloc)
-        if referring_domain == domain:
+        if _is_exact_official_host(domain, urlparse(result.referring_official_url).netloc):
             return True
     return False
 
@@ -202,46 +235,79 @@ def _discover_candidates(domain: str, action_type: str, fetcher: PageFetcher) ->
     return candidates[:8]
 
 
-def _extract(domain: str, action_type: str, pages: list[PageContent]) -> PrivacyActionResult | None:
+def _extract_from_page(domain: str, action_type: str, page: PageContent) -> PrivacyActionResult | None:
     """Pass 1 only (regex/keyword heuristics) - no LLM pass, deliberately,
     for this pipeline (see module docstring). Never fabricates a URL: only
     ever returns a page/portal link that was actually fetched or actually
-    linked to from a fetched page."""
+    linked to from a fetched page. UNVERIFIED - the caller (_extract)
+    still has to run verify_mechanism before trusting this; a page can
+    match a keyword signal while still being the wrong service entirely
+    (e.g. a related corporate domain's own compliance page)."""
     patterns = _SIGNAL_PATTERNS[action_type]
+    text_lower = page.text.lower()
+    signal = next((p for p in patterns if re.search(p, text_lower)), None)
+    if not signal:
+        return None
+
+    portal_link = next(
+        (href for href, _ in page.external_links if any(d in href for d in THIRD_PARTY_PRIVACY_PORTAL_DOMAINS)),
+        None,
+    )
+    login_signal = any(re.search(p, text_lower) for p in _LOGIN_REQUIRED_PATTERNS)
+
+    reasons = [f"page text matched pattern: /{signal}/"]
+    if portal_link:
+        reasons.append(f"official page links to known privacy-portal domain: {portal_link}")
+        method = DeletionMethod.PRIVACY_PORTAL
+    elif login_signal:
+        reasons.append(f"login/account-settings required per: /{[p for p in _LOGIN_REQUIRED_PATTERNS if re.search(p, text_lower)][0]}/")
+        method = DeletionMethod.ACCOUNT_SETTING
+    else:
+        method = DeletionMethod.WEB_FORM
+
+    return PrivacyActionResult(
+        domain=domain, action_type=action_type, method=method,
+        url=portal_link or page.url,
+        login_required=bool(login_signal) if not portal_link else None,
+        source_url=portal_link or page.url,
+        referring_official_url=page.url if portal_link else None,
+        source_type=SourceType.THIRD_PARTY_VIA_OFFICIAL_LINK if portal_link else SourceType.OFFICIAL_PRIVACY_POLICY,
+        confidence="high" if (portal_link or login_signal) else "medium",
+        scope_note=scope_note_for(action_type),
+        reasons=reasons,
+    )
+
+
+def _extract(
+    domain: str, action_type: str, pages: list[PageContent]
+) -> tuple[PrivacyActionResult | None, PrivacyActionResult | None]:
+    """Tries every fetched page in order and returns (verified, best_lead):
+
+    - `verified`: the first candidate that BOTH matches a keyword signal
+      AND passes verify_mechanism - a page matching the signal but failing
+      verification (e.g. a same-corporate-family page that isn't the
+      target service's own mechanism, like an AWS compliance page when
+      the company being cleaned is amazon.com) is skipped rather than
+      treated as this pipeline's final answer, so a later, genuinely
+      applicable page in the SAME batch can still be found and preferred.
+      One genuinely applicable page may legitimately satisfy more than one
+      PrivacyActionType - each is verified independently via its own call
+      to research(), so this never needs to be decided here.
+    - `best_lead`: the first candidate that matched a signal but did NOT
+      verify (None if every matching page verified, or none matched at
+      all) - kept only so Tier B can still surface it as a manual-review
+      lead (see PrivacyMechanismUnverified); never itself trusted."""
+    best_lead: PrivacyActionResult | None = None
     for page in pages:
-        text_lower = page.text.lower()
-        signal = next((p for p in patterns if re.search(p, text_lower)), None)
-        if not signal:
+        candidate = _extract_from_page(domain, action_type, page)
+        if candidate is None:
             continue
-
-        portal_link = next(
-            (href for href, _ in page.external_links if any(d in href for d in THIRD_PARTY_PRIVACY_PORTAL_DOMAINS)),
-            None,
-        )
-        login_signal = any(re.search(p, text_lower) for p in _LOGIN_REQUIRED_PATTERNS)
-
-        reasons = [f"page text matched pattern: /{signal}/"]
-        if portal_link:
-            reasons.append(f"official page links to known privacy-portal domain: {portal_link}")
-            method = DeletionMethod.PRIVACY_PORTAL
-        elif login_signal:
-            reasons.append(f"login/account-settings required per: /{[p for p in _LOGIN_REQUIRED_PATTERNS if re.search(p, text_lower)][0]}/")
-            method = DeletionMethod.ACCOUNT_SETTING
-        else:
-            method = DeletionMethod.WEB_FORM
-
-        return PrivacyActionResult(
-            domain=domain, action_type=action_type, method=method,
-            url=portal_link or page.url,
-            login_required=bool(login_signal) if not portal_link else None,
-            source_url=portal_link or page.url,
-            referring_official_url=page.url if portal_link else None,
-            source_type=SourceType.THIRD_PARTY_VIA_OFFICIAL_LINK if portal_link else SourceType.OFFICIAL_PRIVACY_POLICY,
-            confidence="high" if (portal_link or login_signal) else "medium",
-            scope_note=scope_note_for(action_type),
-            reasons=reasons,
-        )
-    return None
+        if verify_mechanism(domain, candidate):
+            candidate.verified = True
+            return candidate, None
+        if best_lead is None:
+            best_lead = candidate
+    return None, best_lead
 
 
 class PrivacyActionResearchProvider(ABC):
@@ -280,10 +346,9 @@ class WebPrivacyActionResearchProvider(PrivacyActionResearchProvider):
                 pages.append(page)
 
         if pages:
-            result = _extract(domain, action_type, pages)
-            if result is not None and verify_mechanism(domain, result):
-                result.verified = True
-                return result
+            verified, _lead = _extract(domain, action_type, pages)
+            if verified is not None:
+                return verified
 
         if self._search_backend is None:
             return None
@@ -305,17 +370,15 @@ class WebPrivacyActionResearchProvider(PrivacyActionResearchProvider):
             if page is not None:
                 pages.append(page)
             elif status in _BLOCKING_STATUSES and blocked_official_url is None:
-                candidate_domain = normalize_domain(urlparse(candidate.url).netloc)
-                if candidate_domain == domain:
+                if _is_exact_official_host(domain, urlparse(candidate.url).netloc):
                     blocked_official_url = candidate.url
 
         if pages:
-            result = _extract(domain, action_type, pages)
-            if result is not None:
-                if verify_mechanism(domain, result):
-                    result.verified = True
-                    return result
-                raise PrivacyMechanismUnverified(result.source_url)
+            verified, lead = _extract(domain, action_type, pages)
+            if verified is not None:
+                return verified
+            if lead is not None:
+                raise PrivacyMechanismUnverified(lead.source_url)
 
         if blocked_official_url:
             raise PrivacyMechanismSourceBlocked(blocked_official_url)
