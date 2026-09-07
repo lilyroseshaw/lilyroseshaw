@@ -1341,6 +1341,62 @@ button:disabled:hover,
 
 .jte-action-list .btn { margin-top: 8px; }
 
+/* The Pantry - visually secondary, quiet, collapsed by default. Reuses
+   .card for the outer collapsible shell and .company-card for each
+   pantry entry (so the existing generic AJAX/wiring code treats it like
+   any other card), but a pantry card itself stays flatter/quieter than
+   an active one - no border/shadow escalation, muted surface. */
+.pantry-section summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-weight: 900;
+  font-size: 15px;
+}
+
+.pantry-count {
+  margin-left: 6px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.pantry-intro {
+  margin: var(--sp-2) 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pantry-empty {
+  margin: var(--sp-3) 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pantry-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+
+.pantry-card {
+  background: var(--surface-alt);
+  border: 3px solid white;
+  box-shadow: 0 0 0 2px var(--border-soft);
+}
+
+.pantry-card-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.pantry-note {
+  margin: var(--sp-2) 0 var(--sp-3);
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .deletion-modal-actions {
   display: flex;
   justify-content: flex-end;

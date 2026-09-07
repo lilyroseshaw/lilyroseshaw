@@ -63,7 +63,7 @@
 <div class="company-list" id="merge-select-scope">
 {% for c in companies %}
   {% set meta = card_meta.get(c.id, {}) %}
-  <article class="company-card status-{{ c.status }}{% if checked_id and checked_id|int == c.id %} just-updated{% endif %}" data-id="{{ c.id }}" id="company-{{ c.id }}">
+  <article class="company-card status-{{ c.status }}{% if checked_id and checked_id|int == c.id %} just-updated{% endif %}" data-id="{{ c.id }}" id="company-{{ c.id }}" data-pantry="false">
 
     <header class="card-head">
       <div class="card-id">
@@ -161,6 +161,7 @@
             data-recipe-explanation="{{ (plan.recipe_explanation if plan else '')|e }}"
             data-recipe-tracking="{{ (plan.recipe_tracking_note if plan else '')|e }}"
             data-jte-explanation="{{ (plan.jte_explanation if plan else '')|e }}"
+            data-leave-it-be-explanation="{{ (plan.leave_it_be_explanation if plan else '')|e }}"
           >Delete my data</button>
 
         {% elif c.deletion_status == "USER_ACTION_REQUIRED" %}
@@ -219,6 +220,7 @@
             data-recipe-explanation="{{ (plan.recipe_explanation if plan else '')|e }}"
             data-recipe-tracking="{{ (plan.recipe_tracking_note if plan else '')|e }}"
             data-jte-explanation="{{ (plan.jte_explanation if plan else '')|e }}"
+            data-leave-it-be-explanation="{{ (plan.leave_it_be_explanation if plan else '')|e }}"
           >Send again</button>
         {% endif %}
 
@@ -393,18 +395,22 @@
     <p id="deletion-modal-recipe-label" class="deletion-detail">Choose a Cleanup Recipe</p>
 
     {# Shown only until this company's PrivacyCase has a recipe on file -
-       see dashboard.js's openModal(). Choosing either recipe here records
+       see dashboard.js's openModal(). Choosing any recipe here records
        intent only (POSTs .../privacy-case/recipe) - it never sends or
-       executes anything. Leave It Be is intentionally not offered yet
-       (Pantry isn't implemented in this milestone). #}
+       executes anything, and never awards Cookie Jar/completion progress
+       by itself for any of the three. #}
     <div id="deletion-modal-choose-recipe" hidden>
       <div class="recipe-option">
-        <p><strong>Full Clean</strong></p>
+        <p><strong>Full Clean</strong> - "Delete eligible personal data. Your account may close."</p>
         <p id="deletion-modal-recipe-explanation" class="deletion-detail"></p>
       </div>
       <div class="recipe-option">
         <p><strong>Just the Essentials</strong> - "Your account stays. Your unnecessary data goes."</p>
         <p id="deletion-modal-jte-explanation" class="deletion-detail"></p>
+      </div>
+      <div class="recipe-option">
+        <p><strong>Leave It Be</strong> - "Keep things as they are. Baker's Dozen won't send or submit anything for this company."</p>
+        <p id="deletion-modal-leave-it-be-explanation" class="deletion-detail"></p>
       </div>
       <p class="deletion-modal-caution">Choosing a recipe only tells Baker's Dozen what you want. It won't send or submit anything yet.</p>
     </div>
@@ -442,6 +448,7 @@
         <button type="button" class="btn btn-ghost" id="deletion-modal-cancel">Cancel</button>
         <button type="button" class="btn btn-primary" id="deletion-modal-recipe-submit" hidden>Choose Full Clean</button>
         <button type="button" class="btn btn-primary" id="deletion-modal-jte-submit" hidden>Choose Just the Essentials</button>
+        <button type="button" class="btn btn-secondary" id="deletion-modal-leave-it-be-submit" hidden>Choose Leave It Be</button>
         <button type="submit" class="btn btn-primary" id="deletion-modal-submit">Continue</button>
       </div>
     </form>
@@ -456,6 +463,46 @@
     <button type="submit" class="btn btn-ghost" id="merge-submit" disabled>Merge selected (keep first checked)</button>
   </form>
 </div>
+
+{# The Pantry: companies whose PrivacyCase.selected_recipe ==
+   RecipeChoice.LEAVE_IT_BE (see app.privacy_case.pantry_company_ids) -
+   PURELY DERIVED, never a second stored state. Visually secondary and
+   collapsed by default, on purpose - this is deliberately not active
+   work. A pantry card never shows the deletion-status UI the active
+   cards do (no research/execute buttons, no progress track) - just
+   identity, the Leave It Be disposition, and one way back to the
+   Cleanup Recipe picker. #}
+<details class="card pantry-section">
+  <summary>The Pantry<span class="pantry-count">({{ pantry_companies|length }})</span></summary>
+  <p class="pantry-intro">Companies you've chosen to leave as they are.</p>
+  {% if not pantry_companies %}
+  <p class="pantry-empty">Nothing here yet.</p>
+  {% else %}
+  <div class="pantry-list">
+  {% for c in pantry_companies %}
+    {% set plan = pantry_recipe_copy.get(c.id) %}
+    <article class="company-card pantry-card" data-id="{{ c.id }}" id="company-{{ c.id }}" data-pantry="true">
+      <div class="pantry-card-row">
+        <div class="card-id">
+          <h3>{{ c.name }}</h3>
+          <p class="domain">{{ c.domain }}</p>
+        </div>
+        <span class="status-badge tone-neutral">Leave It Be</span>
+      </div>
+      <p class="pantry-note">No cleanup request is active for {{ c.name }}.</p>
+      <button type="button" class="btn btn-ghost btn-small delete-my-data-btn"
+        data-id="{{ c.id }}"
+        data-name="{{ c.name|e }}"
+        data-selected-recipe=""
+        data-recipe-explanation="{{ (plan.recipe_explanation if plan else '')|e }}"
+        data-jte-explanation="{{ (plan.jte_explanation if plan else '')|e }}"
+        data-leave-it-be-explanation="{{ (plan.leave_it_be_explanation if plan else '')|e }}"
+      >Change recipe</button>
+    </article>
+  {% endfor %}
+  </div>
+  {% endif %}
+</details>
 
 <script src="/static/dashboard.js"></script>
 {% endblock %}

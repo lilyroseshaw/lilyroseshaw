@@ -334,19 +334,23 @@ def test_malk_legacy_shape_unaffected_by_just_the_essentials():
     assert outcome.is_pantry is False
 
 
-def test_no_pantry_behavior_introduced(client_db, client):
-    """LEAVE_IT_BE must not be offered/rendered anywhere in this
-    milestone's dashboard, and selecting JUST_THE_ESSENTIALS must never
-    set is_pantry."""
+def test_just_the_essentials_never_triggers_pantry_behavior(client_db, client):
+    """Selecting JUST_THE_ESSENTIALS must never set is_pantry or place the
+    company in the dashboard's Pantry section - Pantry membership is
+    exclusively RecipeChoice.LEAVE_IT_BE (see test_pantry.py for the Leave
+    It Be / Pantry milestone's own dedicated coverage, including that
+    Leave It Be is now correctly offered/rendered as a third recipe)."""
     company = _company(client_db)
     client.post(f"/api/companies/{company.id}/privacy-case/recipe", data={"recipe": "JUST_THE_ESSENTIALS"})
 
     resp = client.get("/dashboard")
     soup = BeautifulSoup(resp.text, "html.parser")
     assert soup.find(id="deletion-modal-choose-recipe") is not None
-    assert "Leave It Be" not in resp.text
     assert "Choose Just the Essentials" in resp.text
     assert "Choose Full Clean" in resp.text
+    pantry_section = soup.find(class_="pantry-section")
+    assert pantry_section is not None
+    assert "Nothing here yet." in pantry_section.get_text()
 
     client_db.expire_all()
     case = client_db.query(PrivacyCase).filter(PrivacyCase.company_id == company.id).one()

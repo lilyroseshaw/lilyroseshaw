@@ -60,6 +60,14 @@
     const newCard = doc.getElementById("company-" + cardId);
     const oldCard = document.getElementById("company-" + cardId);
     if (!newCard || !oldCard) return false;
+    if (oldCard.dataset.pantry !== newCard.dataset.pantry) {
+      // The company moved between the active company list and the Pantry
+      // - two separate sections of the page a single in-place node swap
+      // can't relocate between. Treated as a swap "failure" so every
+      // existing caller's fallback (a full reload) runs - the Pantry
+      // section a reload lands on already reflects the change correctly.
+      return false;
+    }
     oldCard.replaceWith(newCard);
     wireCard(newCard);
     return true;
@@ -270,10 +278,12 @@
     const jteReviewEl = document.getElementById("deletion-modal-jte-review");
     const recipeExplanationEl = document.getElementById("deletion-modal-recipe-explanation");
     const jteExplanationEl = document.getElementById("deletion-modal-jte-explanation");
+    const leaveItBeExplanationEl = document.getElementById("deletion-modal-leave-it-be-explanation");
     const recipeSummaryEl = document.getElementById("deletion-modal-recipe-summary");
     const trackingNoteEl = document.getElementById("deletion-modal-tracking-note");
     const recipeSubmitBtn = document.getElementById("deletion-modal-recipe-submit");
     const jteSubmitBtn = document.getElementById("deletion-modal-jte-submit");
+    const leaveItBeSubmitBtn = document.getElementById("deletion-modal-leave-it-be-submit");
     const jteSummaryEl = document.getElementById("deletion-modal-jte-summary");
 
     modalCompanyId = btn.dataset.id;
@@ -297,19 +307,35 @@
     submitBtn.hidden = selectedRecipe !== "FULL_CLEAN";
     recipeSubmitBtn.hidden = selectedRecipe !== "";
     jteSubmitBtn.hidden = selectedRecipe !== "";
+    leaveItBeSubmitBtn.hidden = selectedRecipe !== "";
 
-    // Reset in case either button is ever visible again later - never
-    // carry a stale "Choosing…"/disabled state into a stage that
-    // shouldn't show it at all.
+    // Reset in case any button is ever visible again later - never carry
+    // a stale "Choosing…"/disabled state into a stage that shouldn't show
+    // it at all.
     recipeSubmitBtn.disabled = false;
     recipeSubmitBtn.textContent = "Choose Full Clean";
     jteSubmitBtn.disabled = false;
     jteSubmitBtn.textContent = "Choose Just the Essentials";
+    leaveItBeSubmitBtn.disabled = false;
+    leaveItBeSubmitBtn.textContent = "Choose Leave It Be";
 
     if (selectedRecipe === "") {
       recipeLabelEl.textContent = "Choose a Cleanup Recipe";
       recipeExplanationEl.textContent = btn.dataset.recipeExplanation || "";
       jteExplanationEl.textContent = btn.dataset.jteExplanation || "";
+      leaveItBeExplanationEl.textContent = btn.dataset.leaveItBeExplanation || "";
+      return;
+    }
+
+    if (selectedRecipe === "LEAVE_IT_BE") {
+      // A disposition, not a privacy action - nothing to preview or
+      // execute. chooseRecipeEl/confirmEl/jteReviewEl/submitBtn are all
+      // already hidden above; Cancel is the only control this stage
+      // needs. (Structurally unreachable today - an active card's recipe
+      // is never LEAVE_IT_BE, since choosing it moves the company to its
+      // own Pantry card instead - but handled explicitly rather than
+      // falling through to the Full Clean preview/execute code below.)
+      recipeLabelEl.textContent = "Cleanup Recipe: Leave It Be";
       return;
     }
 
@@ -427,6 +453,7 @@
     const submitBtn = document.getElementById("deletion-modal-submit");
     const recipeSubmitBtn = document.getElementById("deletion-modal-recipe-submit");
     const jteSubmitBtn = document.getElementById("deletion-modal-jte-submit");
+    const leaveItBeSubmitBtn = document.getElementById("deletion-modal-leave-it-be-submit");
 
     cancelBtn.addEventListener("click", closeModal);
     modal.addEventListener("click", (event) => {
@@ -450,6 +477,9 @@
     }
     if (jteSubmitBtn) {
       jteSubmitBtn.addEventListener("click", () => chooseRecipe("JUST_THE_ESSENTIALS", jteSubmitBtn));
+    }
+    if (leaveItBeSubmitBtn) {
+      leaveItBeSubmitBtn.addEventListener("click", () => chooseRecipe("LEAVE_IT_BE", leaveItBeSubmitBtn));
     }
   }
 

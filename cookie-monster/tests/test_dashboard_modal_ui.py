@@ -178,14 +178,13 @@ def test_cancel_never_submits_a_deletion_request(live_server, page):
 
 def test_first_stage_has_no_ambiguous_continue_button(live_server, page):
     """Before a recipe is selected, the modal must show exactly Cancel and
-    the two available Cleanup Recipe choices - never the execute-flow's
-    Continue/Send/Open button alongside them, and never a third "Leave It
-    Be" choice (not exposed yet)."""
+    the three available Cleanup Recipe choices - never the execute-flow's
+    Continue/Send/Open button alongside them."""
     base_url, _ = live_server
     page.goto(f"{base_url}/dashboard")
     page.click(".delete-my-data-btn")
     visible = page.locator("#deletion-modal-form button:visible").all_inner_texts()
-    assert visible == ["Cancel", "Choose Full Clean", "Choose Just the Essentials"]
+    assert visible == ["Cancel", "Choose Full Clean", "Choose Just the Essentials", "Choose Leave It Be"]
 
 
 def test_choosing_full_clean_transitions_seamlessly_without_closing_modal(live_server, page):
@@ -283,11 +282,14 @@ def test_just_the_essentials_stage_has_no_execute_button(live_server, page):
     assert visible == ["Cancel"]
 
 
-def test_leave_it_be_is_never_exposed_in_the_recipe_picker(live_server, page):
+def test_leave_it_be_is_offered_but_only_in_the_recipe_picker_stage(live_server, page):
+    """Leave It Be is now a real, offered recipe (see The Pantry milestone)
+    - but only in the picker stage itself, never leaking into a DIFFERENT
+    recipe's own review/confirm stage once one has been chosen."""
     base_url, _ = live_server
     page.goto(f"{base_url}/dashboard")
     page.click(".delete-my-data-btn")
-    assert "Leave It Be" not in page.locator("#deletion-modal").inner_text()
+    assert "Leave It Be" in page.locator("#deletion-modal").inner_text()
 
     page.click("#deletion-modal-jte-submit")
     page.wait_for_timeout(500)
@@ -391,6 +393,120 @@ def test_find_cleanup_method_click_shows_needs_review_when_nothing_verified(live
     # No internal jargon anywhere in what's shown.
     for jargon in ("NEEDS_RESEARCH", "NEEDS_REVIEW", "PrivacyAction", "resolver"):
         assert jargon not in text
+
+
+# --- Leave It Be / The Pantry: a real browser must show it as a third
+# recipe, moving a company between the active list and the Pantry is a
+# real (if full-reload) transition, never a duplicate, and choosing it
+# never fires any consequential request.
+
+def test_leave_it_be_shown_as_third_recipe_choice_live(live_server, page):
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+
+    visible = page.locator("#deletion-modal-form button:visible").all_inner_texts()
+    assert visible == ["Cancel", "Choose Full Clean", "Choose Just the Essentials", "Choose Leave It Be"]
+
+
+def test_choosing_leave_it_be_never_fires_an_execute_request(live_server, page):
+    base_url, _ = live_server
+    execute_requests = []
+    page.on(
+        "request",
+        lambda req: execute_requests.append(req.url)
+        if req.method == "POST" and "/deletion/execute" in req.url
+        else None,
+    )
+
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-leave-it-be-submit")
+    page.wait_for_load_state("load")
+    page.wait_for_timeout(300)
+
+    assert execute_requests == []
+
+
+def test_choosing_leave_it_be_moves_company_into_pantry_live(live_server, page):
+    """Choosing Leave It Be relocates the company between two different
+    sections of the page (active list -> Pantry) - a full reload, not an
+    in-place swap (see dashboard.js's swapCard pantry-boundary check).
+    After it, the company must appear in the Pantry and NOT in the active
+    company list - never both."""
+    base_url, company_id = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-leave-it-be-submit")
+    page.wait_for_load_state("load")
+    page.wait_for_timeout(300)
+
+    active_card = page.locator(f"#merge-select-scope #company-{company_id}")
+    assert active_card.count() == 0, "the company must no longer show in the active area"
+
+    # The Pantry section is collapsed by default (visually secondary) -
+    # expand it to see/interact with its contents, same as any user would.
+    page.click(".pantry-section summary")
+    pantry_section = page.locator(".pantry-section")
+    pantry_card = pantry_section.locator(f"#company-{company_id}")
+    assert pantry_card.count() == 1, "the company must appear exactly once, in the Pantry"
+    assert "Leave It Be" in pantry_card.inner_text()
+    assert "Change recipe" in pantry_card.inner_text()
+
+    # Never duplicated anywhere else on the page.
+    assert page.locator(f"#company-{company_id}").count() == 1
+
+
+def test_pantry_change_recipe_reopens_the_cleanup_recipe_picker(live_server, page):
+    """The Pantry card's ONE action must return the user to the same
+    three-choice Cleanup Recipe picker - never straight into a specific
+    recipe's own confirm/review stage."""
+    base_url, company_id = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-leave-it-be-submit")
+    page.wait_for_load_state("load")
+    page.wait_for_timeout(300)
+
+    page.click(".pantry-section summary")
+    page.locator(f".pantry-section #company-{company_id} .delete-my-data-btn").click()
+    page.wait_for_timeout(300)
+
+    assert page.locator("#deletion-modal").is_visible()
+    assert page.locator("#deletion-modal-choose-recipe").is_visible()
+    assert page.locator("#deletion-modal-confirm").is_hidden()
+    assert page.locator("#deletion-modal-jte-review").is_hidden()
+    visible = page.locator("#deletion-modal-form button:visible").all_inner_texts()
+    assert visible == ["Cancel", "Choose Full Clean", "Choose Just the Essentials", "Choose Leave It Be"]
+
+
+def test_pantry_change_recipe_back_to_full_clean_removes_from_pantry_live(live_server, page):
+    base_url, company_id = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-leave-it-be-submit")
+    page.wait_for_load_state("load")
+    page.wait_for_timeout(300)
+
+    page.click(".pantry-section summary")
+    page.locator(f".pantry-section #company-{company_id} .delete-my-data-btn").click()
+    page.wait_for_timeout(300)
+    page.click("#deletion-modal-recipe-submit")
+    page.wait_for_load_state("load")
+    page.wait_for_timeout(300)
+
+    page.click(".pantry-section summary")
+    pantry_section = page.locator(".pantry-section")
+    assert pantry_section.locator(f"#company-{company_id}").count() == 0
+    active_card = page.locator(f"#merge-select-scope #company-{company_id}")
+    assert active_card.count() == 1
+
+
+def test_leave_it_be_flow_uses_bakers_dozen_branding(live_server, page):
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    assert "Cookie Monster" not in page.locator("#deletion-modal").inner_text()
 
 
 def test_user_step_required_flow_does_not_claim_submission(live_server, page):

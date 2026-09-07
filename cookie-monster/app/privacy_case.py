@@ -200,3 +200,35 @@ def just_the_essentials_intro_copy(company: Company) -> str:
         "verified way to do so. Some information may still need to be kept. Baker's Dozen "
         "only reports outcomes the evidence actually supports."
     )
+
+
+def leave_it_be_intro_copy(company: Company) -> str:
+    """Compact, truthful pre-commit explanation for Leave It Be - same
+    "explain before you choose" pattern as full_clean_review_copy/
+    just_the_essentials_intro_copy. Leave It Be is a USER DISPOSITION
+    (Pantry membership - see RecipeChoice.LEAVE_IT_BE's own docstring),
+    never a privacy action: choosing it here is never itself a deletion
+    request or an opt-out, and it earns no Cookie Jar/privacy-completion
+    progress. Generic across every company - no verified recipe data is
+    needed to describe what leaving a company alone means."""
+    return (
+        f"Keep {company.name} exactly as it is for now. Baker's Dozen won't send or submit "
+        "any privacy request for this company - no deletion, no opt-out is being claimed. "
+        "This earns no Cookie Jar progress. You can change this anytime."
+    )
+
+
+def pantry_company_ids(db: Session) -> set[int]:
+    """Every company currently in the Pantry, PURELY DERIVED from
+    PrivacyCase.selected_recipe == RecipeChoice.LEAVE_IT_BE - the exact
+    same definition CaseOutcome.is_pantry already uses (see
+    app/case_outcome.py). No separate is_pantry column exists anywhere,
+    and this function creates none; it is the one place Pantry membership
+    is computed IN BULK, for dashboard rendering (main.py), instead of
+    once per company."""
+    rows = (
+        db.query(PrivacyCase.company_id)
+        .filter(PrivacyCase.selected_recipe == RecipeChoice.LEAVE_IT_BE)
+        .all()
+    )
+    return {row[0] for row in rows}

@@ -46,6 +46,8 @@ from app.privacy_case import (
     get_or_create_privacy_case,
     get_selected_recipe,
     just_the_essentials_intro_copy,
+    leave_it_be_intro_copy,
+    pantry_company_ids,
     select_recipe,
 )
 from app.research_search import BraveSearchBackend
@@ -164,8 +166,20 @@ def on_startup():
 
 def _status_counts(db) -> dict[str, int]:
     companies = db.query(Company).all()
-    ready = sum(1 for c in companies if c.deletion_status == DeletionStatus.READY)
-    sent = sum(1 for c in companies if c.deletion_status in _SENT_OR_LATER_STATUSES)
+    # Pantry companies (RecipeChoice.LEAVE_IT_BE) are user-disposed to be
+    # left alone - a Company row can still carry a real deletion_status
+    # from before that choice (e.g. a method was already found, or a
+    # request was already sent) that must never read as CURRENT active
+    # workload once the user has said "leave it be". Excluded ONLY from
+    # the two active-workload signals below; "deleted" stays Pantry-
+    # inclusive on purpose - a real, evidence-backed completion is never
+    # un-true just because the user later chose a disposition for it (see
+    # main.py's Pantry dashboard-safety requirement / case_outcome.py's
+    # "never change evidence-derived truth").
+    pantry_ids = pantry_company_ids(db)
+    non_pantry = [c for c in companies if c.id not in pantry_ids]
+    ready = sum(1 for c in non_pantry if c.deletion_status == DeletionStatus.READY)
+    sent = sum(1 for c in non_pantry if c.deletion_status in _SENT_OR_LATER_STATUSES)
     done = sum(1 for c in companies if c.deletion_status == DeletionStatus.COMPLETED)
     return {
         "total": len(companies),
@@ -637,6 +651,30 @@ def _execution_plans_for_companies(db, companies: list[Company]) -> dict[int, di
             "recipe_explanation": review_copy["explanation"],
             "recipe_tracking_note": review_copy["tracking_note"],
             "jte_explanation": just_the_essentials_intro_copy(company),
+            "leave_it_be_explanation": leave_it_be_intro_copy(company),
+        }
+    return plans
+
+
+def _recipe_picker_copy_for_companies(db, companies: list[Company]) -> dict[int, dict]:
+    """The three Cleanup Recipe picker explanations for `companies` -
+    generic, capability-independent copy (unlike
+    _execution_plans_for_companies, which additionally needs a verified,
+    READY/FAILED deletion mechanism for Full Clean's own execution plan
+    and so only ever covers a subset of companies). Used for the Pantry
+    card's "Change recipe" button, which must offer the SAME picker
+    explanations regardless of the company's current deletion_status -
+    a Pantry company is very often NOT_STARTED/UNKNOWN, since choosing
+    Leave It Be never depends on (or waits for) a deletion mechanism ever
+    having been found."""
+    plans: dict[int, dict] = {}
+    for company in companies:
+        recipe = db.query(DeletionRecipe).filter(DeletionRecipe.domain == company.domain).one_or_none()
+        review_copy = full_clean_review_copy(company, recipe)
+        plans[company.id] = {
+            "recipe_explanation": review_copy["explanation"],
+            "jte_explanation": just_the_essentials_intro_copy(company),
+            "leave_it_be_explanation": leave_it_be_intro_copy(company),
         }
     return plans
 
@@ -669,12 +707,22 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
                 (Company.name.ilike(like)) | (Company.domain.ilike(like))
             )
         companies = query.order_by(Company.evidence_count.desc()).all()
+        # Pantry membership (RecipeChoice.LEAVE_IT_BE) is purely derived
+        # from PrivacyCase, never a stored flag - see
+        # app.privacy_case.pantry_company_ids. A Pantry company belongs in
+        # the dashboard's separate Pantry section INSTEAD of the active
+        # company area, regardless of the current status filter - never
+        # both, so it can never appear duplicated.
+        pantry_ids = pantry_company_ids(db)
+        active_companies = [c for c in companies if c.id not in pantry_ids]
+        pantry_companies = [c for c in companies if c.id in pantry_ids]
         counts = _status_counts(db)
         send_enabled = google_oauth.has_send_scope(db)
         response_tracking_enabled = google_oauth.has_readonly_scope(db)
-        research_info = _research_info_for_companies(db, companies)
-        execution_plans = _execution_plans_for_companies(db, companies)
-        card_meta = _card_meta_for_companies(companies)
+        research_info = _research_info_for_companies(db, active_companies)
+        execution_plans = _execution_plans_for_companies(db, active_companies)
+        card_meta = _card_meta_for_companies(active_companies)
+        pantry_recipe_copy = _recipe_picker_copy_for_companies(db, pantry_companies)
         unread_mail_count = mail.unread_mail_count(db)
         checked_id_raw = request.query_params.get("checked")
         checked_company_name = None
@@ -713,7 +761,9 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
 
     context = {
         "request": request,
-        "companies": companies,
+        "companies": active_companies,
+        "pantry_companies": pantry_companies,
+        "pantry_recipe_copy": pantry_recipe_copy,
         "counts": counts,
         "status_filter": status,
         "query": q,
