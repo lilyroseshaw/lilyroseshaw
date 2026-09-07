@@ -66,10 +66,15 @@ _DEFAULT_CTA_LABEL = "Continue cleanup"
 
 # Status pill text - the ONLY user-facing rendering of a PrivacyAction's
 # status. NEEDS_RESEARCH has no pill of its own (the "Find cleanup method"
-# button IS its state) - see just_the_essentials_review.
+# button IS its state) - see just_the_essentials_review. USER_COMPLETED
+# deliberately never says "Confirmed"/"Verified"/"Completed" alone -
+# "by you" keeps the provenance visible in the one place a user actually
+# reads it, so user-attested progress can never be mistaken for
+# CONFIRMED's company/system-evidence meaning.
 _STATUS_LABEL = {
     PrivacyActionStatus.NEEDS_REVIEW: "Needs review",
     PrivacyActionStatus.USER_ACTION_REQUIRED: "Ready for you",
+    PrivacyActionStatus.USER_COMPLETED: "Completed by you",
     PrivacyActionStatus.SUBMITTED: "Requested",
     PrivacyActionStatus.CONFIRMED: "Confirmed",
     PrivacyActionStatus.REJECTED: "Declined",
@@ -121,6 +126,50 @@ def ensure_just_the_essentials_actions(db: Session, privacy_case: PrivacyCase) -
     return sorted(existing.values(), key=lambda a: a.action_type) + created
 
 
+def attest_user_completed(db: Session, action: PrivacyAction, company: Company) -> bool:
+    """Records that the USER attests they personally completed the
+    verified privacy control Baker's Dozen handed them to for this ONE
+    PrivacyAction. USER-ATTESTED completion ONLY - never presented as, or
+    conflated with, company-confirmed/system-verified evidence (that
+    stays PrivacyActionStatus.CONFIRMED, still unreachable this
+    milestone). Does not send Gmail, submit anything externally, execute
+    a deletion, run research, or start a follow-up - it is a pure intent/
+    provenance record, same spirit as app.privacy_case.select_recipe.
+
+    Only valid FROM USER_ACTION_REQUIRED - there must be a real, verified
+    mechanism the user could actually have used (fails closed: returns
+    False, no mutation, for any other status). Idempotent if the action
+    is ALREADY USER_COMPLETED: returns True without rewriting evidence or
+    appending a duplicate audit event, so a double-submit (double-click,
+    retried request) can never fabricate a second "the user did this
+    again" entry.
+
+    Provenance is stored in the action's own `evidence` JSON (merged, not
+    replaced, so the mechanism's scope_note/source_url/confidence already
+    recorded by research survive) rather than a new column - `attested_by`
+    is always EventSource.USER, never inferred, never fabricated for a
+    company/system source."""
+    if action.status == PrivacyActionStatus.USER_COMPLETED:
+        return True
+    if action.status != PrivacyActionStatus.USER_ACTION_REQUIRED:
+        return False
+
+    now = datetime.datetime.utcnow()
+    action.status = PrivacyActionStatus.USER_COMPLETED
+    action.evidence = {
+        **(action.evidence or {}),
+        "attested_by": EventSource.USER,
+        "attested_at": now.isoformat(),
+    }
+    record_event(
+        db, company.id, EventType.PRIVACY_ACTION_USER_COMPLETED, source=EventSource.USER,
+        evidence={"action_type": action.action_type},
+        privacy_action_id=action.id,
+    )
+    db.commit()
+    return True
+
+
 def just_the_essentials_review(company: Company, actions: list[PrivacyAction]) -> list[dict]:
     """Pure, read-only review payload for the Just the Essentials preview
     screen - one entry per PrivacyAction, truthful about exactly what's
@@ -129,9 +178,10 @@ def just_the_essentials_review(company: Company, actions: list[PrivacyAction]) -
     `status`/`action_type` are the raw internal vocabulary, included for
     the caller's own branching (see dashboard.js) - never meant to be
     rendered as text. Every OTHER field here (`status_label`,
-    `explanation`, `cta_label`, `scope_note`) is exactly what the browser
-    is meant to show, with no internal jargon (NEEDS_RESEARCH,
-    USER_ACTION_REQUIRED, PrivacyAction, resolver, ...) leaking into it."""
+    `explanation`, `cta_label`, `scope_note`, `can_attest`) is exactly
+    what the browser is meant to show/branch on, with no internal jargon
+    (NEEDS_RESEARCH, USER_ACTION_REQUIRED, PrivacyAction, resolver, ...)
+    leaking into display text."""
     review = []
     for action in sorted(actions, key=lambda a: a.action_type):
         copy = _ACTION_COPY.get(action.action_type, {"label": action.action_type, "summary": ""})
@@ -145,6 +195,9 @@ def just_the_essentials_review(company: Company, actions: list[PrivacyAction]) -
             "cta_label": None,
             "cta_url": None,
             "scope_note": None,
+            # Only true from USER_ACTION_REQUIRED - the one status with a
+            # real, verified mechanism the user could actually have used.
+            "can_attest": action.status == PrivacyActionStatus.USER_ACTION_REQUIRED,
         }
         if action.status == PrivacyActionStatus.NEEDS_RESEARCH:
             entry["explanation"] = f"Baker's Dozen needs to find {company.name}'s verified method for this."
@@ -155,6 +208,13 @@ def just_the_essentials_review(company: Company, actions: list[PrivacyAction]) -
         elif action.status == PrivacyActionStatus.USER_ACTION_REQUIRED:
             entry["cta_label"] = _CTA_LABEL_BY_METHOD.get(action.method, _DEFAULT_CTA_LABEL)
             entry["cta_url"] = action.url
+            entry["scope_note"] = (action.evidence or {}).get("scope_note")
+        elif action.status == PrivacyActionStatus.USER_COMPLETED:
+            # No remaining action - no cta_label/cta_url, just the
+            # "Completed by you" status pill (see _STATUS_LABEL) plus the
+            # SAME truthful scope_note recorded when the mechanism was
+            # originally found, carried over unchanged by
+            # attest_user_completed's evidence merge.
             entry["scope_note"] = (action.evidence or {}).get("scope_note")
         review.append(entry)
     return review

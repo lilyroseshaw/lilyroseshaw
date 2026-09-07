@@ -312,6 +312,10 @@ _TRACKING_OUTCOME_FOR_ACTION_STATUS = {
     # "requested", until a real request goes out.
     PrivacyActionStatus.USER_ACTION_REQUIRED: NonessentialTrackingOutcome.UNRESOLVED,
     PrivacyActionStatus.SUBMITTED: NonessentialTrackingOutcome.CLEANUP_REQUESTED,
+    # The user attests they personally completed this control - real
+    # progress, but distinct from CONFIRMED (company/system evidence):
+    # never implies historical tracking/profile data was actually deleted.
+    PrivacyActionStatus.USER_COMPLETED: NonessentialTrackingOutcome.USER_COMPLETED,
     PrivacyActionStatus.CONFIRMED: NonessentialTrackingOutcome.CONFIRMED,
     # A decline/failure is not achieved and not merely "requested" either -
     # UNRESOLVED is the honest bucket; the specific reason lives in the
@@ -324,6 +328,9 @@ _OPT_OUT_OUTCOME_FOR_ACTION_STATUS = {
     PrivacyActionStatus.NEEDS_REVIEW: OptOutOutcome.UNKNOWN,
     PrivacyActionStatus.USER_ACTION_REQUIRED: OptOutOutcome.UNKNOWN,
     PrivacyActionStatus.SUBMITTED: OptOutOutcome.REQUESTED,
+    # Same distinction as tracking above: real user-attested progress,
+    # never a claim that previously shared data was recalled/deleted.
+    PrivacyActionStatus.USER_COMPLETED: OptOutOutcome.USER_COMPLETED,
     PrivacyActionStatus.CONFIRMED: OptOutOutcome.CONFIRMED,
     PrivacyActionStatus.REJECTED: OptOutOutcome.UNKNOWN,
     PrivacyActionStatus.FAILED: OptOutOutcome.UNKNOWN,
@@ -334,20 +341,26 @@ def _just_the_essentials_overall(actions: list[PrivacyAction]) -> str:
     """Aggregates a JUST_THE_ESSENTIALS case's overall state across ALL of
     its PrivacyAction rows - one confirmed sub-action must never read as
     the whole recipe being resolved. RESOLVED requires every action
-    CONFIRMED; any action still needing the user wins over a mix of
-    others; anything else in flight (including today's universal
-    NEEDS_RESEARCH) is WORKING - never RESOLVED/UNRESOLVED off incomplete
-    information."""
+    CONFIRMED (real company/system evidence); USER_RESOLVED is the
+    distinct, honest reading when every action reached a positive outcome
+    but at least one is only USER_COMPLETED (user-attested, never
+    conflated with RESOLVED's company/system-evidence meaning); any
+    action still needing the user wins over a mix of others; anything
+    else in flight (including today's universal NEEDS_RESEARCH) is
+    WORKING - never RESOLVED/UNRESOLVED off incomplete information."""
     if not actions:
         return CaseState.WORKING
     statuses = {a.status for a in actions}
     if statuses <= {PrivacyActionStatus.CONFIRMED}:
         return CaseState.RESOLVED
+    if statuses <= {PrivacyActionStatus.CONFIRMED, PrivacyActionStatus.USER_COMPLETED}:
+        return CaseState.USER_RESOLVED
     if PrivacyActionStatus.USER_ACTION_REQUIRED in statuses:
         return CaseState.NEEDS_USER
     if statuses <= PrivacyActionStatus.TERMINAL:
-        # Every action reached a terminal state, but not all CONFIRMED
-        # (some REJECTED/FAILED) - done processing, not a full success.
+        # Every action reached a terminal state, but not all CONFIRMED/
+        # USER_COMPLETED (some REJECTED/FAILED) - done processing, not a
+        # full success.
         return CaseState.UNRESOLVED
     return CaseState.WORKING
 

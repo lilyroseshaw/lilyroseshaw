@@ -1339,7 +1339,21 @@ button:disabled:hover,
   color: var(--muted);
 }
 
-.jte-action-list .btn { margin-top: 8px; }
+.jte-action-list .btn { margin-top: 8px; margin-right: 6px; }
+
+/* "I did this" -> compact confirm sub-block (see dashboard.js's
+   attestJteAction) - visually part of its own PrivacyAction entry, never
+   a separate modal, since it's a small, local confirmation step. */
+.jte-attest-confirm {
+  margin-top: 8px;
+  padding: 8px 10px;
+
+  background: var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.jte-attest-confirm p { margin: 0 0 8px; }
+.jte-attest-confirm .btn { margin-top: 0; }
 
 /* The Pantry - visually secondary, quiet, collapsed by default. Reuses
    .card for the outer collapsible shell and .company-card for each

@@ -328,6 +328,12 @@ class EventType:
     # safe/verifiable to use for one PrivacyAction - mirrors RESEARCH_FAILED
     # but scoped to a single PrivacyAction; never fabricates a mechanism.
     PRIVACY_ACTION_NEEDS_REVIEW = "PRIVACY_ACTION_NEEDS_REVIEW"
+    # The USER attested they personally completed the verified mechanism
+    # for one PrivacyAction (see app/privacy_action.attest_user_completed).
+    # Always source=USER - this is explicitly NOT company/system evidence,
+    # never PRIVACY_ACTION_METHOD_FOUND's own (system-sourced) meaning.
+    # evidence carries {"action_type"}.
+    PRIVACY_ACTION_USER_COMPLETED = "PRIVACY_ACTION_USER_COMPLETED"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
@@ -337,6 +343,7 @@ class EventType:
         EXECUTION_STARTED, EXECUTION_INTERRUPTED, MAIL_REPLY_SENT,
         FOLLOWUP_SENT, ACCOUNT_CLOSED_DATA_UNVERIFIED, ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
         RECIPE_SELECTED, PRIVACY_ACTION_NEEDS_RESEARCH, PRIVACY_ACTION_METHOD_FOUND, PRIVACY_ACTION_NEEDS_REVIEW,
+        PRIVACY_ACTION_USER_COMPLETED,
     }
 
 
@@ -410,11 +417,18 @@ class PrivacyActionStatus:
     specific mechanism is found (a company-controlled settings/portal
     page - never a full-deletion mechanism repurposed for this), or to
     NEEDS_REVIEW when the lookup ran but found nothing safe to use. Both
-    are honest, non-fabricated outcomes, not stub values. SUBMITTED/
-    CONFIRMED/REJECTED/FAILED remain unreachable this milestone - no
-    execution mechanism exists yet (opening a verified page is a user
-    hand-off, never automated submission) - but stay in this vocabulary
-    so it's genuinely ready for that work later, not half-built."""
+    are honest, non-fabricated outcomes, not stub values.
+
+    From USER_ACTION_REQUIRED, the user may attest (see
+    app/privacy_action.attest_user_completed) that they personally used
+    the verified mechanism - USER_COMPLETED. This is USER-ATTESTED
+    completion ONLY: real progress, but never conflated with CONFIRMED,
+    which is reserved for company/system-verified evidence (still
+    unreachable this milestone - no execution mechanism exists yet;
+    opening a verified page is a user hand-off, never automated
+    submission). SUBMITTED/CONFIRMED/REJECTED/FAILED stay in this
+    vocabulary so it's genuinely ready for that work later, not
+    half-built."""
     NEEDS_RESEARCH = "NEEDS_RESEARCH"
     # A "Find cleanup method"/"Look again" lookup ran but found no
     # official, verifiable mechanism to use - distinct from NEEDS_RESEARCH
@@ -423,16 +437,33 @@ class PrivacyActionStatus:
     # site) - see app/privacy_action_resolver.py.
     NEEDS_REVIEW = "NEEDS_REVIEW"
     USER_ACTION_REQUIRED = "USER_ACTION_REQUIRED"
+    # The USER attests they personally completed the verified privacy
+    # control Baker's Dozen handed them to - see
+    # app/privacy_action.attest_user_completed. Provenance is always
+    # USER (see EventSource), never inferred and never presented as
+    # company-confirmed, independently-verified, or proof that historical
+    # data was deleted/recalled - see app/case_outcome.py's
+    # NonessentialTrackingOutcome.USER_COMPLETED/OptOutOutcome.USER_COMPLETED.
+    USER_COMPLETED = "USER_COMPLETED"
     SUBMITTED = "SUBMITTED"
     CONFIRMED = "CONFIRMED"
     REJECTED = "REJECTED"
     FAILED = "FAILED"
 
-    ALL = {NEEDS_RESEARCH, NEEDS_REVIEW, USER_ACTION_REQUIRED, SUBMITTED, CONFIRMED, REJECTED, FAILED}
+    ALL = {
+        NEEDS_RESEARCH, NEEDS_REVIEW, USER_ACTION_REQUIRED, USER_COMPLETED,
+        SUBMITTED, CONFIRMED, REJECTED, FAILED,
+    }
 
     # Portal/page opened, or a request sent, is never by itself completion -
     # same evidence-first rule Company.deletion_status already enforces.
-    TERMINAL = {CONFIRMED, REJECTED, FAILED}
+    # USER_COMPLETED belongs here too: nothing further is expected of this
+    # ONE action once the user has attested to it (see
+    # _just_the_essentials_overall in app/case_outcome.py, which checks
+    # for an all-USER_COMPLETED/CONFIRMED case BEFORE falling through to
+    # this set, so a genuine user-completed success is never miscounted
+    # as an unresolved failure alongside a REJECTED/FAILED sibling).
+    TERMINAL = {CONFIRMED, USER_COMPLETED, REJECTED, FAILED}
 
 
 class AccountOutcome:
@@ -467,24 +498,34 @@ class NonessentialTrackingOutcome:
     meaningful when RecipeChoice.JUST_THE_ESSENTIALS was selected - see
     CaseOutcome.nonessential_tracking, which is None otherwise (not
     applicable, not merely unresolved). No execution engine exists for
-    this recipe yet, so CONFIRMED is not reachable in this milestone."""
+    this recipe yet, so CONFIRMED (company/system-verified evidence) is
+    not reachable in this milestone. USER_COMPLETED is reachable - the
+    user attesting they personally used a verified mechanism - but is
+    kept deliberately distinct from CONFIRMED: it never establishes that
+    historical tracking/profile data was actually deleted, only that this
+    one control step was completed according to the user."""
     CLEANUP_REQUESTED = "CLEANUP_REQUESTED"
+    USER_COMPLETED = "USER_COMPLETED"
     CONFIRMED = "CONFIRMED"
     UNRESOLVED = "UNRESOLVED"
 
-    ALL = {CLEANUP_REQUESTED, CONFIRMED, UNRESOLVED}
+    ALL = {CLEANUP_REQUESTED, USER_COMPLETED, CONFIRMED, UNRESOLVED}
 
 
 class OptOutOutcome:
     """Progress of a sale/sharing/behavioral-ad opt-out ask - another
     JUST_THE_ESSENTIALS-specific axis, None when not applicable (see
     CaseOutcome.opt_out). No execution engine exists for this recipe yet,
-    so CONFIRMED is not reachable in this milestone."""
+    so CONFIRMED (company/system-verified evidence) is not reachable in
+    this milestone. USER_COMPLETED is reachable - the user attesting they
+    personally used a verified opt-out mechanism - but never establishes
+    that data already shared with other companies was recalled/deleted."""
     REQUESTED = "REQUESTED"
+    USER_COMPLETED = "USER_COMPLETED"
     CONFIRMED = "CONFIRMED"
     UNKNOWN = "UNKNOWN"
 
-    ALL = {REQUESTED, CONFIRMED, UNKNOWN}
+    ALL = {REQUESTED, USER_COMPLETED, CONFIRMED, UNKNOWN}
 
 
 class RetentionOutcome:
@@ -521,9 +562,17 @@ class CaseState:
     WORKING = "WORKING"
     NEEDS_USER = "NEEDS_USER"
     RESOLVED = "RESOLVED"
+    # Every JUST_THE_ESSENTIALS PrivacyAction reached a positive outcome
+    # according to the USER (PrivacyActionStatus.USER_COMPLETED), with
+    # none purely company/system-confirmed alone - see
+    # app/case_outcome.py's _just_the_essentials_overall. Deliberately
+    # NOT RESOLVED: RESOLVED stays reserved exclusively for real company/
+    # system evidence, so a reader can never mistake user-attested
+    # progress for a company-confirmed privacy result.
+    USER_RESOLVED = "USER_RESOLVED"
     UNRESOLVED = "UNRESOLVED"
 
-    ALL = {WORKING, NEEDS_USER, RESOLVED, UNRESOLVED}
+    ALL = {WORKING, NEEDS_USER, RESOLVED, USER_RESOLVED, UNRESOLVED}
 
 
 class EventSource:

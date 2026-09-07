@@ -36,7 +36,7 @@ from app.deletion_response_tracker import (
 from app.gmail_scan import scan_inbox
 from app.mail import MailSendError, MailState, ReplyKind
 from app.models import Company, DeletionEvent, DeletionRecipe, MailMessage, PrivacyCase
-from app.privacy_action import ensure_just_the_essentials_actions, just_the_essentials_review
+from app.privacy_action import attest_user_completed, ensure_just_the_essentials_actions, just_the_essentials_review
 from app.privacy_action_research import build_default_privacy_action_provider
 from app.privacy_action_resolver import resolve_privacy_action
 from app.privacy_case import (
@@ -1017,6 +1017,48 @@ def research_just_the_essentials_action(company_id: int, action_type: str):
         if action is None:
             raise HTTPException(status_code=404, detail="Privacy action not found")
         resolve_privacy_action(db, action, company, _privacy_action_provider)
+        actions = ensure_just_the_essentials_actions(db, privacy_case)
+        return {"actions": just_the_essentials_review(company, actions)}
+    finally:
+        db.close()
+
+
+@app.post("/api/companies/{company_id}/just-the-essentials/{action_type}/attest-completed")
+def attest_just_the_essentials_action(company_id: int, action_type: str):
+    """The "Confirm I did this" button's server side - records that the
+    USER attests they personally completed the verified privacy control
+    Baker's Dozen handed them to for this ONE PrivacyAction (see
+    app.privacy_action.attest_user_completed). USER-ATTESTED completion
+    ONLY: never sends Gmail, submits anything externally, executes a
+    deletion, runs research, or starts a follow-up - and never claims
+    company/system confirmation or that historical data was deleted/
+    recalled. Only valid from USER_ACTION_REQUIRED (a real, verified
+    mechanism must actually exist); idempotent if already attested.
+
+    Same fail-closed JUST_THE_ESSENTIALS gate as the preview/research
+    routes above - a FULL_CLEAN/LEAVE_IT_BE/no-recipe company, or an
+    action_type that doesn't belong to this company's own PrivacyCase,
+    can never reach this. Accepts no client-submitted status - the ONLY
+    transition this route can ever make is USER_ACTION_REQUIRED ->
+    USER_COMPLETED for one specific, server-resolved PrivacyAction row."""
+    if action_type not in PrivacyActionType.ALL:
+        raise HTTPException(status_code=404, detail="Unknown privacy action type")
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        privacy_case = db.query(PrivacyCase).filter(PrivacyCase.company_id == company_id).one_or_none()
+        if privacy_case is None or privacy_case.selected_recipe != RecipeChoice.JUST_THE_ESSENTIALS:
+            raise HTTPException(
+                status_code=400, detail="Choose Just the Essentials for this company before continuing."
+            )
+        actions = ensure_just_the_essentials_actions(db, privacy_case)
+        action = next((a for a in actions if a.action_type == action_type), None)
+        if action is None:
+            raise HTTPException(status_code=404, detail="Privacy action not found")
+        if not attest_user_completed(db, action, company):
+            raise HTTPException(status_code=400, detail="This action isn't ready to be marked completed yet.")
         actions = ensure_just_the_essentials_actions(db, privacy_case)
         return {"actions": just_the_essentials_review(company, actions)}
     finally:

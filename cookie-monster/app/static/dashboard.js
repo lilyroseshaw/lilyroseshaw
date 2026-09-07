@@ -182,7 +182,7 @@
     NEEDS_REVIEW: "Look again",
   };
 
-  function runJteResearch(companyId, actionType, button) {
+  function runJteResearch(companyId, companyName, actionType, button) {
     const originalLabel = button.textContent;
     button.disabled = true;
     button.textContent = "Searching…";
@@ -193,7 +193,7 @@
       .then((resp) => (resp.ok ? resp.json() : null))
       .then((data) => {
         if (!data) throw new Error("research failed");
-        renderJteActions(companyId, data.actions);
+        renderJteActions(companyId, companyName, data.actions);
       })
       .catch(() => {
         button.disabled = false;
@@ -201,7 +201,31 @@
       });
   }
 
-  function renderJteActions(companyId, actions) {
+  // Records the USER's attestation that they personally completed the
+  // verified privacy control for ONE PrivacyAction - never immediately
+  // on the first click (see renderJteActions' confirm sub-block below).
+  // USER-ATTESTED ONLY: this never sends Gmail, submits anything
+  // externally, executes a deletion, or runs research - see
+  // app.privacy_action.attest_user_completed.
+  function attestJteAction(companyId, companyName, actionType, button) {
+    button.disabled = true;
+    button.textContent = "Saving…";
+    fetch("/api/companies/" + companyId + "/just-the-essentials/" + actionType + "/attest-completed", {
+      method: "POST",
+      credentials: "same-origin",
+    })
+      .then((resp) => (resp.ok ? resp.json() : null))
+      .then((data) => {
+        if (!data) throw new Error("attest failed");
+        renderJteActions(companyId, companyName, data.actions);
+      })
+      .catch(() => {
+        button.disabled = false;
+        button.textContent = "Confirm I did this";
+      });
+  }
+
+  function renderJteActions(companyId, companyName, actions) {
     const listEl = document.getElementById("deletion-modal-jte-actions");
     listEl.textContent = "";
     (actions || []).forEach((action) => {
@@ -243,7 +267,7 @@
         btn.type = "button";
         btn.className = "btn btn-secondary btn-small";
         btn.textContent = researchLabel;
-        btn.addEventListener("click", () => runJteResearch(companyId, action.action_type, btn));
+        btn.addEventListener("click", () => runJteResearch(companyId, companyName, action.action_type, btn));
         item.appendChild(btn);
       } else if (action.cta_url) {
         const link = document.createElement("a");
@@ -253,6 +277,55 @@
         link.className = "btn btn-primary btn-small";
         link.textContent = action.cta_label || "Continue cleanup";
         item.appendChild(link);
+      }
+
+      // "I did this" -> a compact, explicit confirm step (never an
+      // immediate state change on the first click) - see
+      // app.privacy_action.attest_user_completed. Only offered when the
+      // server says this action is actually eligible (can_attest), i.e.
+      // there's a real, verified mechanism the user could have used.
+      if (action.can_attest) {
+        const attestBtn = document.createElement("button");
+        attestBtn.type = "button";
+        attestBtn.className = "btn btn-ghost btn-small";
+        attestBtn.textContent = "I did this";
+
+        const confirmBlock = document.createElement("div");
+        confirmBlock.className = "jte-attest-confirm";
+        confirmBlock.hidden = true;
+
+        const confirmText = document.createElement("p");
+        confirmText.className = "deletion-detail";
+        confirmText.textContent =
+          "You're confirming that you completed " + companyName + "'s privacy control yourself. " +
+          "Baker's Dozen will record this action as completed by you. This does not mean " +
+          companyName + " confirmed that historical data was deleted or recalled.";
+        confirmBlock.appendChild(confirmText);
+
+        const cancelBtn = document.createElement("button");
+        cancelBtn.type = "button";
+        cancelBtn.className = "btn btn-ghost btn-small";
+        cancelBtn.textContent = "Cancel";
+        cancelBtn.addEventListener("click", () => {
+          confirmBlock.hidden = true;
+          attestBtn.hidden = false;
+        });
+
+        const confirmBtn = document.createElement("button");
+        confirmBtn.type = "button";
+        confirmBtn.className = "btn btn-primary btn-small";
+        confirmBtn.textContent = "Confirm I did this";
+        confirmBtn.addEventListener("click", () => attestJteAction(companyId, companyName, action.action_type, confirmBtn));
+        confirmBlock.appendChild(cancelBtn);
+        confirmBlock.appendChild(confirmBtn);
+
+        attestBtn.addEventListener("click", () => {
+          attestBtn.hidden = true;
+          confirmBlock.hidden = false;
+        });
+
+        item.appendChild(attestBtn);
+        item.appendChild(confirmBlock);
       }
 
       listEl.appendChild(item);
@@ -342,12 +415,12 @@
     if (selectedRecipe === "JUST_THE_ESSENTIALS") {
       recipeLabelEl.textContent = "Cleanup Recipe: Just the Essentials";
       jteSummaryEl.textContent = "Just the Essentials for " + name + ":";
-      renderJteActions(btn.dataset.id, []);
+      renderJteActions(btn.dataset.id, name, []);
       fetch("/api/companies/" + btn.dataset.id + "/just-the-essentials/preview")
         .then((resp) => (resp.ok ? resp.json() : null))
         .then((data) => {
           if (!data || modal.hidden) return;
-          renderJteActions(btn.dataset.id, data.actions);
+          renderJteActions(btn.dataset.id, name, data.actions);
         })
         .catch(() => {});
       return;
