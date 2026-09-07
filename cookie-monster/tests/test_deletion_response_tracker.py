@@ -1696,3 +1696,360 @@ def test_broad_deletion_reply_processed_before_due_followup_sends_no_followup(db
     assert sent == 0
     mock_send.assert_not_called()
     assert company not in chase_engine.get_companies_due_for_followup(db)
+
+
+# =========================================================================
+# Generalized stored-reply reconciliation: reclassify_stale_unknown_
+# response now also reconsiders a company ALREADY STUCK on a confident but
+# too-narrow classification (ACCOUNT_CLOSED_DATA_UNVERIFIED/
+# ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED), not just UNKNOWN_RESPONSE - see
+# _RECONCILIATION_ALLOWED_TRANSITIONS in app/deletion_response_tracker.py.
+#
+# This is the practical self-correction path for the real Goop Kitchen
+# case: a company already stuck on ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+# for its last-processed reply (stored BEFORE the response_classify.py fix
+# that made the current classifier read that same reply as COMPLETED) has
+# no other way to reach the correct status - check_company_response only
+# ever looks at messages NEWER than the stored cursor, and this same
+# message already IS the cursor.
+# =========================================================================
+
+def _seed_stale_response(
+    db, company, status, gmail_message_id="m2", text=MALK_ACKNOWLEDGMENT_TEXT, occurred_at=None,
+    confidence="high", from_addr="privacy@goop.com", direction="inbound",
+):
+    """Generalized version of _seed_stale_unknown_response - reproduces a
+    company already stuck on ANY stored classification_status (not just
+    UNKNOWN_RESPONSE) for its last-processed reply, exactly as an OLDER,
+    less capable classifier would have left it - all WITHOUT going
+    through check_company_response, so no Gmail call is ever made to set
+    this up."""
+    occurred_at = occurred_at or datetime.datetime(2024, 1, 1, 0, 0, 0)
+    old_classification = ResponseClassification(
+        status=status, confidence=confidence, quote=text[:200], reasons=["stale classification fixture"],
+    )
+    message = _msg(gmail_message_id, text, from_addr, _epoch_ms(occurred_at))
+    if direction == "outbound":
+        message["labelIds"] = ["SENT"]
+    row = mail.record_inbound_mail_message(db, company, message, text, old_classification)
+    row.direction = direction
+    company.deletion_last_response_message_id = gmail_message_id
+    company.deletion_status = status
+    company.deletion_evidence = {
+        "type": "gmail_reply", "quote": text[:200], "confidence": confidence,
+        "classified_at": datetime.datetime.utcnow().isoformat(),
+    }
+    db.commit()
+    return row
+
+
+def test_stale_account_record_deleted_reply_self_corrects_to_completed(db):
+    """The real Goop Kitchen case, reconciled from already-stored evidence
+    only - no new Gmail message, using the SAME message the company is
+    already stuck on."""
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", waiting_on=WaitingOn.COMPANY,
+        next_followup_at=datetime.datetime(2020, 1, 1),
+    )
+    message_row = _seed_stale_response(
+        db, company, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        gmail_message_id="goop-m2", text=GOOP_BROAD_DELETION_REPLY_TEXT,
+    )
+    # The old (wrong) audit event, exactly as it would already exist from
+    # when this reply was first (mis)classified live.
+    record_event(
+        db, company.id, EventType.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        evidence={"quote": GOOP_BROAD_DELETION_REPLY_TEXT[:200], "confidence": "high", "message_id": "goop-m2"},
+    )
+    db.commit()
+    events_before = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count()
+
+    with patch("app.google_oauth.fetch_thread_messages") as mock_fetch, \
+         patch("app.chase_engine._send_followup_email") as mock_send:
+        changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is True
+    mock_fetch.assert_not_called()  # no Gmail read
+    mock_send.assert_not_called()  # no Gmail send
+
+    assert company.deletion_status == DeletionStatus.COMPLETED
+    assert company.deletion_completed_at is not None
+    assert company.waiting_on is None
+    assert company.next_followup_at is None
+    assert company.deletion_evidence["reclassified"] is True
+    assert "outside of the account record" in company.deletion_evidence["quote"].lower()
+
+    db.refresh(message_row)
+    assert message_row.classification_status == DeletionStatus.COMPLETED
+
+    # Old, wrong event remains in the append-only audit trail...
+    old_event = (
+        db.query(DeletionEvent)
+        .filter(DeletionEvent.company_id == company.id, DeletionEvent.event_type == EventType.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED)
+        .one()
+    )
+    assert old_event.evidence.get("reclassified") is not True
+    # ...followed by exactly one new completion event.
+    new_event = (
+        db.query(DeletionEvent)
+        .filter(DeletionEvent.company_id == company.id, DeletionEvent.event_type == EventType.COMPLETION_CONFIRMED)
+        .one()
+    )
+    assert new_event.evidence["reclassified"] is True
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == events_before + 1
+
+    assert company not in chase_engine.get_companies_due_for_followup(db)
+
+    # Idempotent: running it again changes nothing further.
+    completed_at_first = company.deletion_completed_at
+    with patch("app.google_oauth.fetch_thread_messages") as mock_fetch2, \
+         patch("app.chase_engine._send_followup_email") as mock_send2:
+        changed_again = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+    assert changed_again is False
+    mock_fetch2.assert_not_called()
+    mock_send2.assert_not_called()
+    assert company.deletion_status == DeletionStatus.COMPLETED
+    assert company.deletion_completed_at == completed_at_first
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == events_before + 1
+
+
+def test_stale_account_closed_reply_self_corrects_to_completed(db):
+    """The same allowed-transition policy also covers ACCOUNT_CLOSED_DATA_
+    UNVERIFIED -> COMPLETED - a company reply that both closed the account
+    AND explicitly confirmed personal-data deletion, once stuck on the
+    weaker of the two claims."""
+    text = "We closed your account. Separately, we confirm all your personal information has been deleted."
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_response(db, company, DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED, text=text)
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is True
+    assert company.deletion_status == DeletionStatus.COMPLETED
+    assert company.deletion_completed_at is not None
+
+
+def test_batch_entry_point_self_corrects_the_goop_case_without_manual_calls(db):
+    """The practical, no-manual-SQL self-correction path: the SAME batch
+    entry point the background worker already calls every tick (no Gmail
+    access, no new worker/timer) picks up the stuck Goop-shaped case on
+    its own."""
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", waiting_on=WaitingOn.COMPANY,
+        next_followup_at=datetime.datetime(2020, 1, 1),
+    )
+    _seed_stale_response(
+        db, company, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        gmail_message_id="goop-batch-1", text=GOOP_BROAD_DELETION_REPLY_TEXT,
+    )
+
+    with patch("app.google_oauth.fetch_thread_messages") as mock_fetch:
+        count = process_stale_unknown_responses(db, ResponseClassifier())
+
+    assert count == 1
+    mock_fetch.assert_not_called()
+    assert company.deletion_status == DeletionStatus.COMPLETED
+    assert company.waiting_on is None
+
+
+# --- Bounded candidate selection ---
+
+def test_candidate_selection_includes_account_record_and_account_closed(db):
+    """get_companies_with_stale_unknown_response's own name predates this
+    generalization, but its candidate set is now the explicit
+    _RECONCILIATION_ALLOWED_TRANSITIONS keys, not just UNKNOWN_RESPONSE."""
+    c1 = _company(db, deletion_method="EMAIL_REQUEST", domain="goop-like.com")
+    _seed_stale_response(db, c1, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, gmail_message_id="c1-m")
+    c2 = _company(db, deletion_method="EMAIL_REQUEST", domain="closed-like.com")
+    _seed_stale_response(db, c2, DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED, gmail_message_id="c2-m")
+
+    due = get_companies_with_stale_unknown_response(db)
+    assert set(due) == {c1, c2}
+
+
+def test_candidate_selection_never_includes_completed_or_other_statuses(db):
+    """Bounded selection cuts both ways: COMPLETED and every status
+    outside the explicit allowlist (IN_PROGRESS, SUBMITTED, REJECTED,
+    FAILED, VERIFICATION_NEEDED, MORE_INFO_REQUIRED) is never a candidate,
+    no matter what evidence it has stored."""
+    for status in (
+        DeletionStatus.COMPLETED, DeletionStatus.IN_PROGRESS, DeletionStatus.SUBMITTED,
+        DeletionStatus.REJECTED, DeletionStatus.FAILED, DeletionStatus.VERIFICATION_NEEDED,
+        DeletionStatus.MORE_INFO_REQUIRED,
+    ):
+        c = _company(
+            db, deletion_method="EMAIL_REQUEST", domain=f"{status.lower()}.example.com",
+            deletion_status=status, deletion_last_response_message_id="whatever", deletion_thread_id="thread123",
+        )
+    due = get_companies_with_stale_unknown_response(db)
+    assert due == []
+
+
+# --- Negative tests: safety guarantees the allowlist/guard must enforce ---
+
+def test_completed_is_never_reopened_or_downgraded(db):
+    """A COMPLETED case is never even consulted with the classifier - the
+    allowlist itself refuses it as a source status, no matter what its
+    stored message would classify as today."""
+    company = _company(db, deletion_method="EMAIL_REQUEST", deletion_completed_at=datetime.datetime(2024, 1, 1))
+    # A body that would classify as REJECTED today if ever re-examined -
+    # proves this isn't merely "no downgrade happened to occur", it's
+    # "the classifier is never even asked".
+    _seed_stale_response(
+        db, company, DeletionStatus.COMPLETED, text="We are unable to delete this data; the request is denied.",
+    )
+    completed_at_before = company.deletion_completed_at
+
+    with patch.object(ResponseClassifier, "classify") as mock_classify:
+        changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is False
+    mock_classify.assert_not_called()
+    assert company.deletion_status == DeletionStatus.COMPLETED
+    assert company.deletion_completed_at == completed_at_before
+
+
+def test_only_the_current_cursor_message_is_ever_reconsidered(db):
+    """A MailMessage that does NOT match Company.deletion_last_response_
+    message_id must never be used, even if it's the only inbound message
+    stored for the company."""
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        deletion_last_response_message_id="cursor-mismatch",
+    )
+    message = _msg("not-the-cursor", GOOP_BROAD_DELETION_REPLY_TEXT, "privacy@goop.com", _epoch_ms(datetime.datetime(2024, 1, 1)))
+    mail.record_inbound_mail_message(
+        db, company, message, GOOP_BROAD_DELETION_REPLY_TEXT,
+        ResponseClassification(status=DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, confidence="high", quote="x"),
+    )
+    db.commit()
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+
+
+def test_outbound_mail_message_cannot_be_used(db):
+    """Only an INBOUND MailMessage (the company's own words) is ever a
+    candidate - an outbound row (Baker's Dozen's own sent text, which may
+    itself contain broad-deletion phrasing when asking for clarification)
+    must never be picked up even if its gmail_message_id happens to equal
+    the current cursor."""
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        deletion_last_response_message_id="dual-direction",
+    )
+    _seed_stale_response(
+        db, company, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        gmail_message_id="dual-direction", text=GOOP_BROAD_DELETION_REPLY_TEXT, direction="outbound",
+    )
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+
+
+def test_older_inbound_message_cannot_overwrite_newer_response_interpretation(db):
+    """An OLDER inbound MailMessage with stronger-looking evidence must
+    never be used just because it exists - only the message matching the
+    CURRENT cursor (the company's actual latest response) is ever
+    consulted, even if an older row would classify more favorably."""
+    company = _company(
+        db, deletion_method="EMAIL_REQUEST", deletion_status=DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        deletion_last_response_message_id="newer-m",
+    )
+    # An OLDER inbound message with the broad-completion language - if
+    # this were wrongly picked up, the case would incorrectly complete.
+    older = _msg("older-m", GOOP_BROAD_DELETION_REPLY_TEXT, "privacy@goop.com", _epoch_ms(datetime.datetime(2023, 1, 1)))
+    mail.record_inbound_mail_message(
+        db, company, older, GOOP_BROAD_DELETION_REPLY_TEXT,
+        ResponseClassification(status=DeletionStatus.COMPLETED, confidence="high", quote="x"),
+    )
+    db.commit()
+    # The actual current cursor message - a narrower, account-only claim.
+    _seed_stale_response(
+        db, company, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        gmail_message_id="newer-m", text="Your account has been deleted.",
+        occurred_at=datetime.datetime(2024, 6, 1),
+    )
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is False  # unchanged - the current cursor's own claim stays narrow
+    assert company.deletion_status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+
+
+def test_unchanged_classification_is_a_noop(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_response(
+        db, company, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, text="Your account has been deleted.",
+    )
+    events_before = db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count()
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+    assert db.query(DeletionEvent).filter(DeletionEvent.company_id == company.id).count() == events_before
+
+
+def test_classifier_returning_unknown_is_a_noop_for_account_record_status(db):
+    """A specific, consequential status is never turned back into
+    UNKNOWN_RESPONSE - if the current classifier can't confidently place
+    the stored text at all, the existing (stronger) status is left
+    exactly as it was."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_response(
+        db, company, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, text="Thanks for your email!",
+    )
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+
+
+def test_account_record_only_evidence_remains_account_record_status(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_response(
+        db, company, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
+        text="The account associated with your email has been deleted.",
+    )
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED
+
+
+def test_account_closed_only_evidence_remains_account_closed_status(db):
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_response(
+        db, company, DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED,
+        text="We've deactivated your account as requested.",
+    )
+
+    changed = reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    assert changed is False
+    assert company.deletion_status == DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED
+
+
+def test_reconciliation_never_reads_or_sends_gmail(db):
+    """Blanket proof, independent of any specific scenario above: neither
+    a Gmail fetch nor a Gmail send is ever reachable from this function."""
+    company = _company(db, deletion_method="EMAIL_REQUEST")
+    _seed_stale_response(
+        db, company, DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED, text=GOOP_BROAD_DELETION_REPLY_TEXT,
+    )
+
+    with patch("app.google_oauth.fetch_thread_messages") as mock_fetch, \
+         patch("app.google_oauth.send_email") as mock_send, \
+         patch("app.chase_engine._send_followup_email") as mock_followup_send:
+        reclassify_stale_unknown_response(db, company, ResponseClassifier())
+
+    mock_fetch.assert_not_called()
+    mock_send.assert_not_called()
+    mock_followup_send.assert_not_called()

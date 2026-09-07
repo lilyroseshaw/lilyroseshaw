@@ -65,9 +65,10 @@ def _process_response_checks(classifier: ResponseClassifier) -> int:
 
 def _process_stale_reclassification(classifier: ResponseClassifier) -> int:
     """No Gmail access required at all - pure local reconciliation against
-    already-stored evidence (see deletion_response_tracker's stale-
-    UNKNOWN_RESPONSE section). Always runs, regardless of which Gmail
-    scopes are granted, since it never talks to Gmail."""
+    already-stored evidence for a small, explicit set of reconsiderable
+    statuses (see deletion_response_tracker.py's
+    _RECONCILIATION_ALLOWED_TRANSITIONS). Always runs, regardless of which
+    Gmail scopes are granted, since it never talks to Gmail."""
     db = get_session()
     try:
         return process_stale_unknown_responses(db, classifier)

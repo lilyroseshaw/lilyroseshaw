@@ -477,40 +477,90 @@ def process_response_checks(
     return len(companies)
 
 
-# --- Stale UNKNOWN_RESPONSE reclassification ---
+# --- Stale/stored classification reconciliation ---
 #
-# A real bug: a company reply already stored and marked "processed" (its
-# gmail_message_id is company.deletion_last_response_message_id) can have
-# been classified UNKNOWN_RESPONSE only because response_classify.py's
-# patterns didn't yet cover its exact phrasing (e.g. "we have received
-# your EMAIL" instead of "...your request", or "someone from our team
-# will get back to you" instead of "we will get back to you" - both real,
-# now-fixed gaps found via a live MALK Organics reply). Once the
-# classifier improves, that company is stuck: check_company_response only
-# ever re-examines messages NEWER than the stored cursor, so a message
-# already marked processed is never looked at again, no matter how much
-# better the classifier gets.
+# A real bug (case A): a company reply already stored and marked
+# "processed" (its gmail_message_id is
+# company.deletion_last_response_message_id) can have been classified
+# UNKNOWN_RESPONSE only because response_classify.py's patterns didn't yet
+# cover its exact phrasing (e.g. "we have received your EMAIL" instead of
+# "...your request", or "someone from our team will get back to you"
+# instead of "we will get back to you" - both real, now-fixed gaps found
+# via a live MALK Organics reply). Once the classifier improves, that
+# company is stuck: check_company_response only ever re-examines messages
+# NEWER than the stored cursor, so a message already marked processed is
+# never looked at again, no matter how much better the classifier gets.
 #
-# The fix reclassifies using ONLY what's already stored - the inbound
-# MailMessage.body_excerpt captured at the time (already the same
-# quote-stripped text the classifier originally saw, see
-# mail.record_inbound_mail_message) - never a new Gmail fetch, never a
-# new MailMessage row, and never a change to deletion_last_response_message_id
-# (the message stays "processed"; nothing is ever reprocessed as if it
-# just arrived). A no-op (still UNKNOWN_RESPONSE) touches nothing at all.
+# A second real bug (case B, found via a live Goop Kitchen reply): the
+# SAME staleness problem, but for a CONFIDENT, non-UNKNOWN classification
+# that later turns out to have been too narrow. Baker's Dozen correctly
+# held ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED and was chasing for
+# confirmation that personal information outside the account record was
+# also deleted; the company's follow-up reply WAS that confirmation, but
+# response_classify.py's account-scoped-vs-broader-claim gap (fixed
+# separately) meant it was classified right back into
+# ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED - and, being a still-chase-
+# eligible status, an automatic follow-up fired again moments later,
+# asking a question the company had just answered. Exactly like case A,
+# check_company_response never re-examines an already-processed message,
+# so a classifier fix alone can't self-correct a company already stuck on
+# the wrong verdict.
+#
+# Both cases are reconciled the SAME way, using ONLY what's already
+# stored - the inbound MailMessage.body_excerpt captured at the time
+# (already the same quote-stripped text the classifier originally saw,
+# see mail.record_inbound_mail_message) - never a new Gmail fetch, never a
+# new MailMessage row, and never a change to
+# deletion_last_response_message_id (the message stays "processed";
+# nothing is ever reprocessed as if it just arrived). A no-op (status
+# unchanged) touches nothing at all.
+#
+# This is NOT an unrestricted "rerun every old email and rewrite history"
+# mechanism: _RECONCILIATION_ALLOWED_TRANSITIONS is an explicit, minimal
+# allowlist of BOTH which current statuses are ever reconsidered AND
+# which specific target statuses each one may move to. A status not
+# listed here as a source (COMPLETED, REJECTED, FAILED, SUBMITTED,
+# IN_PROGRESS, VERIFICATION_NEEDED, MORE_INFO_REQUIRED) is never touched,
+# no matter what the current classifier says about its stored message -
+# in particular, COMPLETED can never be reopened/downgraded, and no status
+# can ever be turned back into UNKNOWN_RESPONSE.
+_RECONCILIATION_ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+    # Case A (MALK Organics): genuine classifier uncertainty resolving to
+    # ANY specific, supported status once the classifier's patterns
+    # improve. UNKNOWN_RESPONSE itself is deliberately excluded as a
+    # target - re-deriving "still unknown" is not an improvement, it's a
+    # no-op (see the equality check in reclassify_stale_unknown_response).
+    DeletionStatus.UNKNOWN_RESPONSE: set(DeletionStatus.ALL) - {DeletionStatus.UNKNOWN_RESPONSE},
+    # Case B (Goop Kitchen): an account/account-record-only claim that,
+    # re-read with the CURRENT classifier, turns out to also explicitly
+    # confirm personal-data deletion more broadly. COMPLETED is always
+    # evidentially STRONGER than either of these (see response_classify.
+    # py's own COMPLETED vs ACCOUNT_CLOSED_DATA_UNVERIFIED/ACCOUNT_RECORD_
+    # DELETED_DATA_UNVERIFIED hierarchy) - this is a one-way, monotonic
+    # upgrade. Deliberately NOT allowed to move to any OTHER status: an
+    # account-record/account-closed claim being re-read as merely
+    # IN_PROGRESS or UNKNOWN_RESPONSE would be a downgrade of already-
+    # stronger evidence the company actually gave, not an improvement.
+    DeletionStatus.ACCOUNT_CLOSED_DATA_UNVERIFIED: {DeletionStatus.COMPLETED},
+    DeletionStatus.ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED: {DeletionStatus.COMPLETED},
+}
+
 
 def get_companies_with_stale_unknown_response(db: Session, limit: int | None = None) -> list[Company]:
-    """Companies stuck on a stored UNKNOWN_RESPONSE classification for
-    their last-processed reply - candidates for safe reclassification if
-    the classifier's patterns have since improved. Every OTHER status
-    (including a wrong one a human would need to correct by hand) is left
-    completely alone - only genuine classifier uncertainty is ever
-    silently re-derived."""
+    """Companies whose last-processed reply's stored classification is
+    eligible for safe reconsideration under _RECONCILIATION_ALLOWED_
+    TRANSITIONS - a small, explicit set of source statuses (currently
+    UNKNOWN_RESPONSE, ACCOUNT_CLOSED_DATA_UNVERIFIED,
+    ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED), never "every company" or
+    every historical message. Every OTHER status (including COMPLETED,
+    and any status a human would need to correct by hand) is left
+    completely alone - only a status this module explicitly knows how to
+    safely re-derive is ever a candidate."""
     limit = limit or config.RESPONSE_CHECK_BATCH_SIZE
     return (
         db.query(Company)
         .filter(
-            Company.deletion_status == DeletionStatus.UNKNOWN_RESPONSE,
+            Company.deletion_status.in_(_RECONCILIATION_ALLOWED_TRANSITIONS.keys()),
             Company.deletion_thread_id.isnot(None),
             Company.deletion_last_response_message_id.isnot(None),
         )
@@ -579,24 +629,43 @@ def _apply_reclassification(
 
 def reclassify_stale_unknown_response(db: Session, company: Company, classifier: ResponseClassifier) -> bool:
     """Re-runs the CURRENT classifier against already-stored evidence for
-    this company's last-processed reply - preferring the current
-    MailMessage-based path, falling back to a legacy pre-mailbox
-    DeletionEvent only when no MailMessage exists at all (see
-    _find_legacy_acknowledgment_event's docstring for exactly why that
-    fallback is safe and how narrowly it's scoped). Returns True only if
-    the status actually changed to something other than UNKNOWN_RESPONSE
-    (a genuine improvement) - False (and no changes made at all) if
-    nothing usable is found, or the classifier still can't confidently
-    place it."""
-    # Self-contained idempotency guard - NOT just relied on via the batch
-    # query's filter (get_companies_with_stale_unknown_response), since
-    # this function is called directly elsewhere (tests, and potentially
-    # future callers). Once reclassified, the event this looks up for the
-    # legacy path can otherwise still "match" (IN_PROGRESS/SUBMITTED and
-    # UNKNOWN_RESPONSE all record under the SAME EventType.COMPANY_ACKNOWLEDGED
-    # - see _EVENT_TYPE_FOR_STATUS), so this check must come first, not be
-    # inferred from whatever the lookups below happen to find.
-    if company.deletion_status != DeletionStatus.UNKNOWN_RESPONSE:
+    this company's last-processed reply (Company.deletion_last_response_
+    message_id, and ONLY that message - never any other historical one,
+    older or newer) - preferring the current MailMessage-based path,
+    falling back to a legacy pre-mailbox DeletionEvent only when no
+    MailMessage exists at all (see _find_legacy_acknowledgment_event's
+    docstring for exactly why that fallback is safe and how narrowly it's
+    scoped).
+
+    Only ever reconsiders a company whose CURRENT deletion_status is one
+    of _RECONCILIATION_ALLOWED_TRANSITIONS's keys, and only ever moves it
+    to one of THAT status's explicitly allowed targets - see that dict's
+    own comments for why each entry is safe. This is never "any old_status
+    != new_status": a status not listed there as a source is never
+    touched (COMPLETED can never be reopened/downgraded), and a
+    classifier verdict outside the allowed target set for the current
+    status is treated exactly like "no improvement" - the case stays
+    exactly as it was, correctly conservative about anything this
+    function doesn't explicitly recognize as safe.
+
+    Returns True only if the status actually changed to an allowed target
+    - False (and no changes made at all, not even a fresh classify() call
+    on some paths) if nothing usable is found, the current status isn't a
+    recognized source, or the classifier's verdict is unchanged or not in
+    the allowed target set for this source status. Reads no Gmail, sends
+    no Gmail, and never fabricates a MailMessage/DeletionEvent row that
+    doesn't already exist - the classifier is applied to text this module
+    already captured, nothing more."""
+    # Self-contained idempotency/safety guard - NOT just relied on via the
+    # batch query's filter (get_companies_with_stale_unknown_response),
+    # since this function is called directly elsewhere (tests, and
+    # potentially future callers). This is what makes a COMPLETED case
+    # (or any other status outside the allowlist) untouchable no matter
+    # what the current classifier would say about its stored message -
+    # the classifier is never even consulted for a company that isn't a
+    # recognized source status.
+    allowed_targets = _RECONCILIATION_ALLOWED_TRANSITIONS.get(company.deletion_status)
+    if allowed_targets is None:
         return False
     message_row = (
         db.query(MailMessage)
@@ -609,8 +678,11 @@ def reclassify_stale_unknown_response(db: Session, company: Company, classifier:
     )
     if message_row is not None:
         classification = classifier.classify(message_row.body_excerpt)
-        if classification.status == DeletionStatus.UNKNOWN_RESPONSE:
-            return False  # no improvement (yet) - leave everything untouched
+        if classification.status == company.deletion_status or classification.status not in allowed_targets:
+            # Either genuinely unchanged (nothing to correct), or a verdict
+            # this source status isn't allowed to move to - both are
+            # no-ops, never a partial/silent downgrade.
+            return False
 
         # Keep the mailbox letter's own understanding in sync with the
         # correction, so "Baker's Dozen understands this as" never
@@ -637,8 +709,8 @@ def reclassify_stale_unknown_response(db: Session, company: Company, classifier:
 
     quote = (legacy_event.evidence or {}).get("quote", "")
     classification = classifier.classify(quote)
-    if classification.status == DeletionStatus.UNKNOWN_RESPONSE:
-        return False  # still genuinely unclear even under the current classifier - leave untouched
+    if classification.status == company.deletion_status or classification.status not in allowed_targets:
+        return False  # unchanged, or not an allowed target for this source status - leave untouched
 
     _apply_reclassification(
         db, company, classification, quote, legacy_event.occurred_at,
