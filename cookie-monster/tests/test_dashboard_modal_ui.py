@@ -178,13 +178,14 @@ def test_cancel_never_submits_a_deletion_request(live_server, page):
 
 def test_first_stage_has_no_ambiguous_continue_button(live_server, page):
     """Before a recipe is selected, the modal must show exactly Cancel and
-    Choose Full Clean - never the execute-flow's Continue/Send/Open button
-    alongside it."""
+    the two available Cleanup Recipe choices - never the execute-flow's
+    Continue/Send/Open button alongside them, and never a third "Leave It
+    Be" choice (not exposed yet)."""
     base_url, _ = live_server
     page.goto(f"{base_url}/dashboard")
     page.click(".delete-my-data-btn")
     visible = page.locator("#deletion-modal-form button:visible").all_inner_texts()
-    assert visible == ["Cancel", "Choose Full Clean"]
+    assert visible == ["Cancel", "Choose Full Clean", "Choose Just the Essentials"]
 
 
 def test_choosing_full_clean_transitions_seamlessly_without_closing_modal(live_server, page):
@@ -230,6 +231,93 @@ def test_full_clean_flow_uses_bakers_dozen_branding(live_server, page):
     page.wait_for_timeout(500)
     assert "Cookie Monster" not in page.locator("#deletion-modal").inner_text()
     assert "Baker's Dozen" in page.locator("#deletion-modal").inner_text()
+
+
+# --- Just the Essentials milestone: a real browser must show the second
+# recipe choice, transition seamlessly into its own review stage (not the
+# Full Clean preview/execute stage), never expose Leave It Be, and never
+# fire a single execute/send request just from choosing or viewing it.
+
+def test_choosing_just_the_essentials_transitions_seamlessly_to_its_own_review(live_server, page):
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-jte-submit")
+    page.wait_for_timeout(500)
+
+    assert page.locator("#deletion-modal").is_visible(), "the modal must stay open through the transition"
+    assert page.locator("#deletion-modal-jte-review").is_visible(), "the Just the Essentials review must now be showing"
+    assert page.locator("#deletion-modal-choose-recipe").is_hidden()
+    assert page.locator("#deletion-modal-confirm").is_hidden(), "Full Clean's preview/execute stage must never show for this recipe"
+
+
+def test_just_the_essentials_review_lists_both_actions_as_needing_research(live_server, page):
+    """With no research pipeline for opt-out/tracking-cleanup mechanisms
+    yet, every action must honestly read as needing research - never a
+    fabricated URL or a false claim of progress."""
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-jte-submit")
+    page.wait_for_timeout(500)
+
+    text = page.locator("#deletion-modal-jte-actions").inner_text()
+    assert "Nonessential tracking" in text
+    assert "Sale/sharing" in text or "opt-out" in text.lower()
+    assert text.count("Needs research") == 2
+
+
+def test_just_the_essentials_stage_has_no_execute_button(live_server, page):
+    """Reviewing Just the Essentials is purely informational - there must
+    be no consequential submit button, only Cancel."""
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-jte-submit")
+    page.wait_for_timeout(500)
+
+    visible = page.locator("#deletion-modal-form button:visible").all_inner_texts()
+    assert visible == ["Cancel"]
+
+
+def test_leave_it_be_is_never_exposed_in_the_recipe_picker(live_server, page):
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    assert "Leave It Be" not in page.locator("#deletion-modal").inner_text()
+
+    page.click("#deletion-modal-jte-submit")
+    page.wait_for_timeout(500)
+    assert "Leave It Be" not in page.locator("#deletion-modal").inner_text()
+
+
+def test_selecting_or_viewing_just_the_essentials_never_fires_an_execute_request(live_server, page):
+    base_url, _ = live_server
+    execute_requests = []
+    page.on(
+        "request",
+        lambda req: execute_requests.append(req.url)
+        if req.method == "POST" and ("/deletion/execute" in req.url or "/deletion/mark-completed" in req.url)
+        else None,
+    )
+
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-jte-submit")
+    page.wait_for_timeout(500)
+    page.click("#deletion-modal-cancel")
+    page.wait_for_timeout(200)
+
+    assert execute_requests == [], "choosing/viewing Just the Essentials must never POST to an execution route"
+
+
+def test_just_the_essentials_flow_uses_bakers_dozen_branding(live_server, page):
+    base_url, _ = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-jte-submit")
+    page.wait_for_timeout(500)
+    assert "Cookie Monster" not in page.locator("#deletion-modal").inner_text()
 
 
 def test_user_step_required_flow_does_not_claim_submission(live_server, page):

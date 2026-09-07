@@ -146,6 +146,15 @@ def full_clean_selected(db: Session, company_id: int) -> bool:
     return case is not None and case.selected_recipe == RecipeChoice.FULL_CLEAN
 
 
+def get_selected_recipe(db: Session, company_id: int) -> str | None:
+    """The company's current RecipeChoice.*, or None if no PrivacyCase
+    exists yet or none has been explicitly selected - read-only, never
+    creates a row just to check this (same convention as
+    full_clean_selected)."""
+    case = db.query(PrivacyCase).filter(PrivacyCase.company_id == company_id).one_or_none()
+    return case.selected_recipe if case is not None else None
+
+
 def full_clean_review_copy(company: Company, recipe: DeletionRecipe | None) -> dict:
     """Compact, truthful pre-commit review copy for the Full Clean recipe -
     see select_recipe()'s module docstring for the intent-vs-evidence
@@ -175,3 +184,19 @@ def full_clean_review_copy(company: Company, recipe: DeletionRecipe | None) -> d
             "It only marks your data deleted once the evidence supports that."
         ),
     }
+
+
+def just_the_essentials_intro_copy(company: Company) -> str:
+    """Compact, truthful pre-commit explanation for Just the Essentials -
+    shown BEFORE recording intent, same "explain before you choose"
+    pattern as full_clean_review_copy. Generic across every company (no
+    verified recipe data is needed to describe what the user is asking
+    for) - see app.privacy_action for what Baker's Dozen can actually do
+    about it, shown separately after selection."""
+    return (
+        f"Keep your {company.name} account, purchases, and the things you actually use. "
+        "Baker's Dozen will pursue cleanup of unnecessary tracking, advertising, profiling, "
+        "and analytics data, and request applicable sale/sharing opt-outs, wherever it has a "
+        "verified way to do so. Some information may still need to be kept. Baker's Dozen "
+        "only reports outcomes the evidence actually supports."
+    )

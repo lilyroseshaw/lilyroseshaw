@@ -309,6 +309,14 @@ class EventType:
     # holds only the current value, this is the append-only history of how
     # it got there. evidence carries {"selected_recipe": RecipeChoice.*}.
     RECIPE_SELECTED = "RECIPE_SELECTED"
+    # A PrivacyAction (see models.py) was first materialized for a
+    # JUST_THE_ESSENTIALS case and assessed to have no verified,
+    # purpose-specific mechanism yet - see app/privacy_action.py. Never
+    # fabricates a mechanism; this is the honest "looked, found nothing
+    # verified yet" audit entry, source=SYSTEM. Distinct from
+    # RESEARCH_FAILED, which is specifically about DeletionRecipe's
+    # domain-level deletion-method research pipeline.
+    PRIVACY_ACTION_NEEDS_RESEARCH = "PRIVACY_ACTION_NEEDS_RESEARCH"
 
     ALL = {
         METHOD_DISCOVERED, RESEARCH_FAILED, USER_CONFIRMED, EMAIL_SENT, PORTAL_OPENED,
@@ -317,7 +325,7 @@ class EventType:
         RESPONSE_CHECK_FAILED, THREAD_ASSOCIATED, RESEARCH_DEFERRED,
         EXECUTION_STARTED, EXECUTION_INTERRUPTED, MAIL_REPLY_SENT,
         FOLLOWUP_SENT, ACCOUNT_CLOSED_DATA_UNVERIFIED, ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED,
-        RECIPE_SELECTED,
+        RECIPE_SELECTED, PRIVACY_ACTION_NEEDS_RESEARCH,
     }
 
 
@@ -357,6 +365,49 @@ class RecipeChoice:
     LEAVE_IT_BE = "LEAVE_IT_BE"
 
     ALL = {FULL_CLEAN, JUST_THE_ESSENTIALS, LEAVE_IT_BE}
+
+
+class PrivacyActionType:
+    """What a single PrivacyAction (models.py) is actually pursuing - one
+    mechanism-level sub-request under a JUST_THE_ESSENTIALS PrivacyCase.
+    Deliberately just these two, matching CaseOutcome's own
+    nonessential_tracking/opt_out axes exactly - not a generic free-form
+    action list. FULL_CLEAN and LEAVE_IT_BE never have PrivacyAction rows
+    in this milestone; a full personal-data deletion request continues to
+    use the existing Company.deletion_* fields, unchanged."""
+    # Cleaning up nonessential tracking/telemetry/profiling/analytics/
+    # advertising-profile data - see NonessentialTrackingOutcome.
+    NONESSENTIAL_TRACKING_CLEANUP = "NONESSENTIAL_TRACKING_CLEANUP"
+    # An applicable sale/sharing/cross-context-behavioral-advertising
+    # opt-out - see OptOutOutcome.
+    SALE_SHARING_OPT_OUT = "SALE_SHARING_OPT_OUT"
+
+    ALL = {NONESSENTIAL_TRACKING_CLEANUP, SALE_SHARING_OPT_OUT}
+
+
+class PrivacyActionStatus:
+    """Lifecycle of one PrivacyAction - independent of, and never
+    conflated with, Company.deletion_status (that's Full Clean's own
+    lifecycle, for a different kind of request entirely). NEEDS_RESEARCH
+    is the honest default and, for this milestone, the only status any
+    action will ever actually reach: no verified, purpose-specific
+    mechanism source exists yet for nonessential-tracking-cleanup or
+    sale/sharing opt-out requests (unlike DeletionRecipe, which only ever
+    researches a full-deletion mechanism) - see app/privacy_action.py.
+    The rest of this vocabulary exists now so the schema is genuinely
+    ready for that research/execution work later, not half-built."""
+    NEEDS_RESEARCH = "NEEDS_RESEARCH"
+    USER_ACTION_REQUIRED = "USER_ACTION_REQUIRED"
+    SUBMITTED = "SUBMITTED"
+    CONFIRMED = "CONFIRMED"
+    REJECTED = "REJECTED"
+    FAILED = "FAILED"
+
+    ALL = {NEEDS_RESEARCH, USER_ACTION_REQUIRED, SUBMITTED, CONFIRMED, REJECTED, FAILED}
+
+    # Portal/page opened, or a request sent, is never by itself completion -
+    # same evidence-first rule Company.deletion_status already enforces.
+    TERMINAL = {CONFIRMED, REJECTED, FAILED}
 
 
 class AccountOutcome:

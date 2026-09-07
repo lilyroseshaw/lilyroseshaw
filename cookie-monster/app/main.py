@@ -19,6 +19,7 @@ from app.deletion_constants import (
     EventSource,
     EventType,
     ExecutionCapability,
+    RecipeChoice,
     RecipeStatus,
     ResearchFailureReason,
 )
@@ -33,12 +34,15 @@ from app.deletion_response_tracker import (
 )
 from app.gmail_scan import scan_inbox
 from app.mail import MailSendError, MailState, ReplyKind
-from app.models import Company, DeletionEvent, DeletionRecipe, MailMessage
+from app.models import Company, DeletionEvent, DeletionRecipe, MailMessage, PrivacyCase
+from app.privacy_action import ensure_just_the_essentials_actions, just_the_essentials_review
 from app.privacy_case import (
     InvalidRecipeChoiceError,
     full_clean_review_copy,
     full_clean_selected,
     get_or_create_privacy_case,
+    get_selected_recipe,
+    just_the_essentials_intro_copy,
     select_recipe,
 )
 from app.response_classify import build_default_classifier
@@ -589,11 +593,12 @@ def _execution_plans_for_companies(db, companies: list[Company]) -> dict[int, di
     actually do. Kept out of the template's own logic on purpose - see
     deletion_engine.py's module docstring.
 
-    Also carries the Full Clean pre-commit gate/review copy for the same
-    companies - see app.privacy_case's full_clean_selected/
-    full_clean_review_copy. This is presentation-only: it never mutates
-    Company, PrivacyCase, or DeletionRecipe, and it never touches the
-    engine's own capability decision above."""
+    Also carries the recipe-picker/pre-commit review copy for the same
+    companies - see app.privacy_case's get_selected_recipe/
+    full_clean_review_copy/just_the_essentials_intro_copy. This is
+    presentation-only: it never mutates Company, PrivacyCase,
+    DeletionRecipe, or PrivacyAction, and it never touches the engine's
+    own capability decision above."""
     relevant = [c for c in companies if c.deletion_status in (DeletionStatus.READY, DeletionStatus.FAILED)]
     plans: dict[int, dict] = {}
     for company in relevant:
@@ -614,10 +619,11 @@ def _execution_plans_for_companies(db, companies: list[Company]) -> dict[int, di
             "consequences": plan.consequences,
             "action_text": action_text,
             "missing_identity_fields": plan.missing_identity_fields,
-            "full_clean_selected": full_clean_selected(db, company.id),
+            "selected_recipe": get_selected_recipe(db, company.id) or "",
             "recipe_summary": review_copy["summary"],
             "recipe_explanation": review_copy["explanation"],
             "recipe_tracking_note": review_copy["tracking_note"],
+            "jte_explanation": just_the_essentials_intro_copy(company),
         }
     return plans
 
@@ -865,7 +871,15 @@ def select_company_recipe(company_id: int, recipe: str = Form(...)):
     deletion_engine/chase_engine - see app.privacy_case.select_recipe's
     docstring for the full list. The actual Full Clean send only happens
     later, via the existing deletion/preview -> deletion/execute flow,
-    once this recipe is on file."""
+    once this recipe is on file.
+
+    For JUST_THE_ESSENTIALS specifically, also ensures the case's two
+    PrivacyAction rows exist (app.privacy_action.
+    ensure_just_the_essentials_actions) - a separate, explicit,
+    idempotent step, not folded into select_recipe() itself, so recipe
+    selection stays generically intent-only for every recipe. This still
+    executes nothing: it only materializes what Baker's Dozen will track,
+    at NEEDS_RESEARCH, for the user's Just the Essentials preview."""
     db = get_session()
     try:
         company = db.get(Company, company_id)
@@ -876,9 +890,36 @@ def select_company_recipe(company_id: int, recipe: str = Form(...)):
             select_recipe(db, privacy_case, recipe)
         except InvalidRecipeChoiceError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if privacy_case.selected_recipe == RecipeChoice.JUST_THE_ESSENTIALS:
+            ensure_just_the_essentials_actions(db, privacy_case)
     finally:
         db.close()
     return _redirect_to_company_card(company_id)
+
+
+@app.get("/api/companies/{company_id}/just-the-essentials/preview")
+def preview_just_the_essentials(company_id: int):
+    """Truthful, read-only review of what Baker's Dozen currently knows
+    about pursuing Just the Essentials for this company - one entry per
+    PrivacyAction. Refuses (400) unless JUST_THE_ESSENTIALS is selected,
+    same fail-closed gate as Full Clean's preview route. Never executes
+    anything; there is currently no verified mechanism for any company to
+    execute (see app.privacy_action's module docstring), so this is
+    purely informational."""
+    db = get_session()
+    try:
+        company = db.get(Company, company_id)
+        if company is None:
+            raise HTTPException(status_code=404, detail="Company not found")
+        privacy_case = db.query(PrivacyCase).filter(PrivacyCase.company_id == company_id).one_or_none()
+        if privacy_case is None or privacy_case.selected_recipe != RecipeChoice.JUST_THE_ESSENTIALS:
+            raise HTTPException(
+                status_code=400, detail="Choose Just the Essentials for this company before continuing."
+            )
+        actions = ensure_just_the_essentials_actions(db, privacy_case)
+        return {"actions": just_the_essentials_review(company, actions)}
+    finally:
+        db.close()
 
 
 @app.post("/api/companies/{company_id}/deletion/check-response")

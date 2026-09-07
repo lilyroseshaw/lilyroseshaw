@@ -160,9 +160,35 @@
     userStepEl.hidden = !showUserStep;
   }
 
+  const JTE_STATUS_LABEL = {
+    NEEDS_RESEARCH: "Needs research",
+    USER_ACTION_REQUIRED: "Needs you",
+    SUBMITTED: "Requested",
+    CONFIRMED: "Confirmed",
+    REJECTED: "Declined",
+    FAILED: "Failed",
+  };
+
+  function renderJteActions(actions) {
+    const listEl = document.getElementById("deletion-modal-jte-actions");
+    listEl.textContent = "";
+    (actions || []).forEach((action) => {
+      const item = document.createElement("li");
+      const label = document.createElement("strong");
+      label.textContent = action.label + " — " + (JTE_STATUS_LABEL[action.status] || action.status);
+      item.appendChild(label);
+      const summary = document.createElement("p");
+      summary.className = "deletion-detail";
+      summary.textContent = action.reason || action.summary || "";
+      item.appendChild(summary);
+      listEl.appendChild(item);
+    });
+  }
+
   function openModal(btn) {
     if (!modal) return;
     const titleEl = document.getElementById("deletion-modal-title");
+    const recipeLabelEl = document.getElementById("deletion-modal-recipe-label");
     const actionEl = document.getElementById("deletion-modal-action");
     const detailsEl = document.getElementById("deletion-modal-details");
     const consequencesEl = document.getElementById("deletion-modal-consequences");
@@ -175,42 +201,68 @@
     const submitBtn = document.getElementById("deletion-modal-submit");
     const chooseRecipeEl = document.getElementById("deletion-modal-choose-recipe");
     const confirmEl = document.getElementById("deletion-modal-confirm");
+    const jteReviewEl = document.getElementById("deletion-modal-jte-review");
     const recipeExplanationEl = document.getElementById("deletion-modal-recipe-explanation");
+    const jteExplanationEl = document.getElementById("deletion-modal-jte-explanation");
     const recipeSummaryEl = document.getElementById("deletion-modal-recipe-summary");
     const trackingNoteEl = document.getElementById("deletion-modal-tracking-note");
     const recipeSubmitBtn = document.getElementById("deletion-modal-recipe-submit");
+    const jteSubmitBtn = document.getElementById("deletion-modal-jte-submit");
+    const jteSummaryEl = document.getElementById("deletion-modal-jte-summary");
 
     modalCompanyId = btn.dataset.id;
     const name = btn.dataset.name || "this company";
     titleEl.textContent = "Delete my data — " + name;
     modal.hidden = false;
 
-    // Full Clean gate (see main.py's preview_deletion_email/
-    // execute_company_deletion): until this company's PrivacyCase has
-    // FULL_CLEAN on file, the modal only ever shows the recipe-choice
-    // step - never the consequences/email preview/execute form, and never
-    // fetches deletion/preview (which the server refuses anyway without a
-    // recipe selected). Choosing Full Clean records intent only; the real
-    // preview -> execute flow below runs unchanged the NEXT time this
-    // modal opens, once selected.
-    const fullCleanSelected = btn.dataset.fullCleanSelected === "true";
-    chooseRecipeEl.hidden = fullCleanSelected;
-    confirmEl.hidden = !fullCleanSelected;
-    submitBtn.hidden = !fullCleanSelected;
-    recipeSubmitBtn.hidden = fullCleanSelected;
-    if (!fullCleanSelected) {
+    // Recipe gate (see main.py's preview_deletion_email/
+    // execute_company_deletion/preview_just_the_essentials): until this
+    // company's PrivacyCase has a recipe on file, the modal only ever
+    // shows the recipe-choice step - never a preview/execute form, and
+    // never fetches a preview endpoint (the server refuses those anyway
+    // without a matching recipe selected). Choosing a recipe records
+    // intent only; the real flow for that recipe runs the NEXT time this
+    // modal opens (in practice, immediately - see the choose-button
+    // handlers below, which re-open this same modal on success).
+    const selectedRecipe = btn.dataset.selectedRecipe || "";
+    chooseRecipeEl.hidden = selectedRecipe !== "";
+    confirmEl.hidden = selectedRecipe !== "FULL_CLEAN";
+    jteReviewEl.hidden = selectedRecipe !== "JUST_THE_ESSENTIALS";
+    submitBtn.hidden = selectedRecipe !== "FULL_CLEAN";
+    recipeSubmitBtn.hidden = selectedRecipe !== "";
+    jteSubmitBtn.hidden = selectedRecipe !== "";
+
+    // Reset in case either button is ever visible again later - never
+    // carry a stale "Choosing…"/disabled state into a stage that
+    // shouldn't show it at all.
+    recipeSubmitBtn.disabled = false;
+    recipeSubmitBtn.textContent = "Choose Full Clean";
+    jteSubmitBtn.disabled = false;
+    jteSubmitBtn.textContent = "Choose Just the Essentials";
+
+    if (selectedRecipe === "") {
+      recipeLabelEl.textContent = "Choose a Cleanup Recipe";
       recipeExplanationEl.textContent = btn.dataset.recipeExplanation || "";
-      recipeSubmitBtn.disabled = false;
-      recipeSubmitBtn.textContent = "Choose Full Clean";
+      jteExplanationEl.textContent = btn.dataset.jteExplanation || "";
       return;
     }
 
-    // Reset in case this element is ever visible again later (e.g. a
-    // future recipe change) - never carry a stale "Choosing…"/disabled
-    // state into a stage that shouldn't show this button at all.
-    recipeSubmitBtn.disabled = false;
-    recipeSubmitBtn.textContent = "Choose Full Clean";
+    if (selectedRecipe === "JUST_THE_ESSENTIALS") {
+      recipeLabelEl.textContent = "Cleanup Recipe: Just the Essentials";
+      jteSummaryEl.textContent = "Just the Essentials for " + name + ":";
+      renderJteActions([]);
+      fetch("/api/companies/" + btn.dataset.id + "/just-the-essentials/preview")
+        .then((resp) => (resp.ok ? resp.json() : null))
+        .then((data) => {
+          if (!data || modal.hidden) return;
+          renderJteActions(data.actions);
+        })
+        .catch(() => {});
+      return;
+    }
 
+    // FULL_CLEAN - unchanged existing preview -> execute flow.
+    recipeLabelEl.textContent = "Cleanup Recipe: Full Clean";
     recipeSummaryEl.textContent = btn.dataset.recipeSummary || "";
     trackingNoteEl.textContent = btn.dataset.recipeTracking || "";
     actionEl.textContent = btn.dataset.action || "";
@@ -261,11 +313,54 @@
     });
   }
 
+  // Records a Cleanup Recipe choice - intent only (see main.py's
+  // select_company_recipe). Never posts to deletion/execute or any other
+  // execution route, and never a form submit - a separate, explicit
+  // click, entirely distinct from any confirm/execute button. On
+  // success, seamlessly transitions this SAME modal straight into that
+  // recipe's own next step (never closes and makes the user click
+  // "Delete my data" a second time) by re-running openModal() against
+  // the freshly swapped card's own button, whose server-rendered
+  // data-selected-recipe now reflects the choice - that's the one and
+  // only thing that decides which stage renders, so this is just the
+  // normal open path, not a special case.
+  function chooseRecipe(recipe, button) {
+    const cardId = modalCompanyId;
+    if (!cardId) return;
+    button.disabled = true;
+    button.textContent = "Choosing…";
+    fetch("/api/companies/" + cardId + "/privacy-case/recipe", {
+      method: "POST",
+      body: new URLSearchParams({ recipe: recipe }),
+      credentials: "same-origin",
+    })
+      .then((resp) => {
+        if (!resp.ok) throw new Error("recipe selection failed: " + resp.status);
+        return resp.text();
+      })
+      .then((html) => {
+        if (!swapCard(cardId, html)) {
+          window.location.reload();
+          return;
+        }
+        const newBtn = document.querySelector('#company-' + cardId + ' .delete-my-data-btn');
+        if (newBtn) {
+          openModal(newBtn);
+        } else {
+          closeModal();
+        }
+      })
+      .catch(() => {
+        window.location.reload();
+      });
+  }
+
   if (modal) {
     const cancelBtn = document.getElementById("deletion-modal-cancel");
     const form = document.getElementById("deletion-modal-form");
     const submitBtn = document.getElementById("deletion-modal-submit");
     const recipeSubmitBtn = document.getElementById("deletion-modal-recipe-submit");
+    const jteSubmitBtn = document.getElementById("deletion-modal-jte-submit");
 
     cancelBtn.addEventListener("click", closeModal);
     modal.addEventListener("click", (event) => {
@@ -284,47 +379,11 @@
       submitFormAjax(form, cardId, submitBtn, closeModal);
     });
 
-    // "Choose Full Clean" - records intent only (see main.py's
-    // select_company_recipe). Never posts to deletion/execute itself, and
-    // never a form submit - a separate, explicit click, entirely distinct
-    // from the confirm/execute button. On success, seamlessly transitions
-    // this SAME modal straight into the real preview (never closes and
-    // makes the user click "Delete my data" a second time) by re-running
-    // openModal() against the freshly swapped card's own button, whose
-    // server-rendered data-full-clean-selected is now "true" - that's the
-    // one and only thing that decides which stage renders, so this is
-    // just the normal open path, not a special case.
     if (recipeSubmitBtn) {
-      recipeSubmitBtn.addEventListener("click", () => {
-        const cardId = modalCompanyId;
-        if (!cardId) return;
-        recipeSubmitBtn.disabled = true;
-        recipeSubmitBtn.textContent = "Choosing…";
-        fetch("/api/companies/" + cardId + "/privacy-case/recipe", {
-          method: "POST",
-          body: new URLSearchParams({ recipe: "FULL_CLEAN" }),
-          credentials: "same-origin",
-        })
-          .then((resp) => {
-            if (!resp.ok) throw new Error("recipe selection failed: " + resp.status);
-            return resp.text();
-          })
-          .then((html) => {
-            if (!swapCard(cardId, html)) {
-              window.location.reload();
-              return;
-            }
-            const newBtn = document.querySelector('#company-' + cardId + ' .delete-my-data-btn');
-            if (newBtn) {
-              openModal(newBtn);
-            } else {
-              closeModal();
-            }
-          })
-          .catch(() => {
-            window.location.reload();
-          });
-      });
+      recipeSubmitBtn.addEventListener("click", () => chooseRecipe("FULL_CLEAN", recipeSubmitBtn));
+    }
+    if (jteSubmitBtn) {
+      jteSubmitBtn.addEventListener("click", () => chooseRecipe("JUST_THE_ESSENTIALS", jteSubmitBtn));
     }
   }
 

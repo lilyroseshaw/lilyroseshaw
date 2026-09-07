@@ -60,6 +60,8 @@ NEW_DELETION_COLUMNS: list[tuple[str, str, str | None]] = [
 # milestone, commit #1 - see models.py's PrivacyCase/DeletionEvent).
 NEW_DELETION_EVENT_COLUMNS: list[tuple[str, str, str | None]] = [
     ("privacy_case_id", "INTEGER", None),
+    # Just the Essentials (commit #5) - see models.py's PrivacyAction.
+    ("privacy_action_id", "INTEGER", None),
 ]
 
 

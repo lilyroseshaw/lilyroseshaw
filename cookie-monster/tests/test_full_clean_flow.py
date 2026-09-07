@@ -203,7 +203,7 @@ def test_dashboard_renders_full_clean_identity_and_copy(client_db, client):
     soup = BeautifulSoup(resp.text, "html.parser")
     btn = soup.find("button", class_="delete-my-data-btn")
     assert btn is not None
-    assert btn["data-full-clean-selected"] == "true"
+    assert btn["data-selected-recipe"] == "FULL_CLEAN"
     assert "Widget Co" in btn["data-recipe-summary"]
     assert "will close your account" in btn["data-recipe-explanation"].lower()
     assert "evidence" in btn["data-recipe-tracking"].lower()
@@ -215,7 +215,7 @@ def test_dashboard_shows_recipe_not_selected_for_new_company(client_db, client):
     soup = BeautifulSoup(resp.text, "html.parser")
     btn = soup.find("button", class_="delete-my-data-btn")
     assert btn is not None
-    assert btn["data-full-clean-selected"] == "false"
+    assert btn["data-selected-recipe"] == ""
 
 
 # --- 8/9/10: execution capability semantics preserved after confirmation ---

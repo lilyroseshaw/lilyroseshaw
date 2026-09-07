@@ -108,8 +108,8 @@ def test_event_type_recipe_selected_exists():
     assert EventType.RECIPE_SELECTED in EventType.ALL
 
 
-def test_privacy_action_table_does_not_exist_yet():
-    """PrivacyAction is deliberately deferred to the Just the Essentials
-    commit (YAGNI - no commit #1 behavior reads/writes it). Guards against
-    it being added speculatively before real requirements exist."""
-    assert "privacy_actions" not in Base.metadata.tables
+def test_privacy_action_table_exists():
+    """PrivacyAction was deliberately deferred at commit #1 (YAGNI - no
+    behavior read/wrote it yet) and introduced at the Just the Essentials
+    commit, which genuinely needs it - see app/privacy_action.py."""
+    assert "privacy_actions" in Base.metadata.tables

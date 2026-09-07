@@ -57,11 +57,13 @@ from app.deletion_constants import (
     NonessentialTrackingOutcome,
     OptOutOutcome,
     PersonalDataOutcome,
+    PrivacyActionStatus,
+    PrivacyActionType,
     RecipeChoice,
     RetentionOutcome,
     WaitingOn,
 )
-from app.models import Company, PrivacyCase
+from app.models import Company, PrivacyAction, PrivacyCase
 
 
 @dataclass(frozen=True)
@@ -291,12 +293,78 @@ assert set(_STATUS_OUTCOME_TABLE.keys()) == DeletionStatus.ALL, (
 )
 
 
-def derive_case_outcome(company: Company, privacy_case: PrivacyCase | None = None) -> CaseOutcome:
+# PrivacyActionStatus -> NonessentialTrackingOutcome / OptOutOutcome. Both
+# outcome vocabularies are narrower than PrivacyActionStatus (3 values vs
+# 6), so this is a many-to-few mapping, not a renaming - see each
+# comment for why. NEEDS_RESEARCH is the only status any action reaches
+# in this milestone (see app/privacy_action.py) - the rest exist so this
+# mapping is genuinely correct once real execution/evidence exists, not
+# just for today's one reachable case.
+_TRACKING_OUTCOME_FOR_ACTION_STATUS = {
+    PrivacyActionStatus.NEEDS_RESEARCH: NonessentialTrackingOutcome.UNRESOLVED,
+    # Not yet actually requested by Baker's Dozen - still unresolved, not
+    # "requested", until a real request goes out.
+    PrivacyActionStatus.USER_ACTION_REQUIRED: NonessentialTrackingOutcome.UNRESOLVED,
+    PrivacyActionStatus.SUBMITTED: NonessentialTrackingOutcome.CLEANUP_REQUESTED,
+    PrivacyActionStatus.CONFIRMED: NonessentialTrackingOutcome.CONFIRMED,
+    # A decline/failure is not achieved and not merely "requested" either -
+    # UNRESOLVED is the honest bucket; the specific reason lives in the
+    # PrivacyAction row's own evidence, not collapsed into this axis.
+    PrivacyActionStatus.REJECTED: NonessentialTrackingOutcome.UNRESOLVED,
+    PrivacyActionStatus.FAILED: NonessentialTrackingOutcome.UNRESOLVED,
+}
+_OPT_OUT_OUTCOME_FOR_ACTION_STATUS = {
+    PrivacyActionStatus.NEEDS_RESEARCH: OptOutOutcome.UNKNOWN,
+    PrivacyActionStatus.USER_ACTION_REQUIRED: OptOutOutcome.UNKNOWN,
+    PrivacyActionStatus.SUBMITTED: OptOutOutcome.REQUESTED,
+    PrivacyActionStatus.CONFIRMED: OptOutOutcome.CONFIRMED,
+    PrivacyActionStatus.REJECTED: OptOutOutcome.UNKNOWN,
+    PrivacyActionStatus.FAILED: OptOutOutcome.UNKNOWN,
+}
+
+
+def _just_the_essentials_overall(actions: list[PrivacyAction]) -> str:
+    """Aggregates a JUST_THE_ESSENTIALS case's overall state across ALL of
+    its PrivacyAction rows - one confirmed sub-action must never read as
+    the whole recipe being resolved. RESOLVED requires every action
+    CONFIRMED; any action still needing the user wins over a mix of
+    others; anything else in flight (including today's universal
+    NEEDS_RESEARCH) is WORKING - never RESOLVED/UNRESOLVED off incomplete
+    information."""
+    if not actions:
+        return CaseState.WORKING
+    statuses = {a.status for a in actions}
+    if statuses <= {PrivacyActionStatus.CONFIRMED}:
+        return CaseState.RESOLVED
+    if PrivacyActionStatus.USER_ACTION_REQUIRED in statuses:
+        return CaseState.NEEDS_USER
+    if statuses <= PrivacyActionStatus.TERMINAL:
+        # Every action reached a terminal state, but not all CONFIRMED
+        # (some REJECTED/FAILED) - done processing, not a full success.
+        return CaseState.UNRESOLVED
+    return CaseState.WORKING
+
+
+def derive_case_outcome(
+    company: Company,
+    privacy_case: PrivacyCase | None = None,
+    actions: list[PrivacyAction] | None = None,
+) -> CaseOutcome:
     """Pure projection of a company's already-audited deletion evidence
-    (plus, optionally, its PrivacyCase's selected Cleanup Recipe) onto the
-    independent CaseOutcome axes. No DB session, no writes, no mutation of
-    `company` or `privacy_case`, no Gmail/chase imports, deterministic -
+    (plus, optionally, its PrivacyCase's selected Cleanup Recipe and, for
+    JUST_THE_ESSENTIALS, its PrivacyAction rows) onto the independent
+    CaseOutcome axes. No DB session, no writes, no mutation of `company`,
+    `privacy_case`, or `actions`, no Gmail/chase imports, deterministic -
     see this module's docstring for the full set of hard rules.
+
+    `actions` is optional and additive: omitting it (the default)
+    preserves this function's original JUST_THE_ESSENTIALS behavior
+    exactly (nonessential_tracking=UNRESOLVED, opt_out=UNKNOWN, overall
+    from Company.deletion_status) for any caller that hasn't been updated
+    to pass PrivacyAction rows yet. When provided, nonessential_tracking/
+    opt_out/overall are derived from the real per-action evidence instead -
+    see _just_the_essentials_overall for why one confirmed action can
+    never resolve the whole case.
     """
     selected_recipe = privacy_case.selected_recipe if privacy_case is not None else None
     is_pantry = privacy_case is not None and selected_recipe == RecipeChoice.LEAVE_IT_BE
@@ -314,11 +382,29 @@ def derive_case_outcome(company: Company, privacy_case: PrivacyCase | None = Non
         overall = CaseState.NEEDS_USER if company.waiting_on == WaitingOn.USER else CaseState.WORKING
 
     if selected_recipe == RecipeChoice.JUST_THE_ESSENTIALS:
-        # No PrivacyAction/execution engine exists yet for this recipe in
-        # this milestone, so this is always the initial "not yet resolved"
-        # value today - never CONFIRMED from the recipe choice alone.
-        nonessential_tracking = NonessentialTrackingOutcome.UNRESOLVED
-        opt_out = OptOutOutcome.UNKNOWN
+        if actions is not None:
+            tracking_action = next(
+                (a for a in actions if a.action_type == PrivacyActionType.NONESSENTIAL_TRACKING_CLEANUP), None
+            )
+            opt_out_action = next(
+                (a for a in actions if a.action_type == PrivacyActionType.SALE_SHARING_OPT_OUT), None
+            )
+            nonessential_tracking = (
+                _TRACKING_OUTCOME_FOR_ACTION_STATUS[tracking_action.status]
+                if tracking_action is not None else NonessentialTrackingOutcome.UNRESOLVED
+            )
+            opt_out = (
+                _OPT_OUT_OUTCOME_FOR_ACTION_STATUS[opt_out_action.status]
+                if opt_out_action is not None else OptOutOutcome.UNKNOWN
+            )
+            overall = _just_the_essentials_overall(actions)
+        else:
+            # No PrivacyAction data supplied - the original, conservative
+            # stub value, never CONFIRMED/RESOLVED from the recipe choice
+            # alone. overall stays whatever Company.deletion_status says
+            # (typically WORKING for a case with no Full Clean history).
+            nonessential_tracking = NonessentialTrackingOutcome.UNRESOLVED
+            opt_out = OptOutOutcome.UNKNOWN
     else:
         # Not applicable for FULL_CLEAN, LEAVE_IT_BE, or no recipe selected
         # at all - None, not UNRESOLVED/UNKNOWN, since these recipes never

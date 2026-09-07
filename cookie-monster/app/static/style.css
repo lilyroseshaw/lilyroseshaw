@@ -1286,6 +1286,40 @@ button:disabled:hover,
 
 .deletion-modal-user-step p { margin: 0; }
 
+/* Recipe picker (stage 1) - one bordered block per offered recipe, same
+   visual weight as .deletion-modal-user-step above, just repeated. */
+.recipe-option {
+  margin-top: 12px;
+  padding: 10px 12px;
+
+  background: var(--surface-alt);
+  border-radius: var(--radius-sm);
+
+  font-size: 13px;
+}
+
+.recipe-option p { margin: 0 0 4px; }
+.recipe-option p:last-child { margin-bottom: 0; }
+
+/* Just the Essentials review - one entry per PrivacyAction. */
+.jte-action-list {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.jte-action-list li {
+  margin-top: 8px;
+  padding: 10px 12px;
+
+  background: var(--surface-alt);
+  border-radius: var(--radius-sm);
+
+  font-size: 13px;
+}
+
+.jte-action-list p { margin: 4px 0 0; }
+
 .deletion-modal-actions {
   display: flex;
   justify-content: flex-end;

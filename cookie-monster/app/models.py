@@ -28,6 +28,7 @@ from app.deletion_constants import (
     DeletionStatus,
     EventSource,
     EventType,
+    PrivacyActionStatus,
     RecipeOrigin,
     RecipeStatus,
 )
@@ -174,6 +175,55 @@ class PrivacyCase(Base):
     )
 
 
+class PrivacyAction(Base):
+    """One mechanism-level sub-request under a JUST_THE_ESSENTIALS
+    PrivacyCase - see PrivacyActionType/PrivacyActionStatus in
+    deletion_constants.py and app/privacy_action.py. Exists because
+    Just the Essentials, unlike Full Clean, can require MULTIPLE
+    independent official controls for one company (e.g. a nonessential-
+    tracking cleanup request and a separate sale/sharing opt-out) - a
+    single Company.deletion_status column cannot represent that without
+    conflating them.
+
+    Deliberately never used by FULL_CLEAN or LEAVE_IT_BE - those continue
+    to use the existing, proven Company.deletion_* fields unchanged. This
+    table is additive, not a replacement for anything.
+
+    status defaults to PrivacyActionStatus.NEEDS_RESEARCH and, in this
+    milestone, never becomes anything else: no verified, purpose-specific
+    mechanism source exists yet for either action_type (unlike
+    DeletionRecipe's domain-level full-deletion research pipeline). This
+    is the honest, non-fabricated state of the world, not a placeholder
+    bug - see app/privacy_action.py's classify function."""
+
+    __tablename__ = "privacy_actions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    privacy_case_id: Mapped[int] = mapped_column(ForeignKey("privacy_cases.id"), index=True)
+    # PrivacyActionType.* - exactly one of the two JUST_THE_ESSENTIALS
+    # categories this row is pursuing.
+    action_type: Mapped[str] = mapped_column(String(32))
+    # DeletionMethod.* - reused vocabulary; UNKNOWN until a real,
+    # purpose-specific mechanism is ever verified for this action.
+    method: Mapped[str] = mapped_column(String(32), default=DeletionMethod.UNKNOWN)
+    # PrivacyActionStatus.*
+    status: Mapped[str] = mapped_column(String(32), default=PrivacyActionStatus.NEEDS_RESEARCH)
+
+    url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    instructions: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    # Structured, non-secret evidence only - same rule as
+    # Company.deletion_evidence/DeletionEvent.evidence.
+    evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    requested_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+    confirmed_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow
+    )
+
+
 class DeletionRecipe(Base):
     """The shared, reusable cache/knowledge base: 'how does this domain handle
     deletion requests'. One row per normalized domain, independent of any one
@@ -250,6 +300,10 @@ class DeletionEvent(Base):
     # event type unrelated to Cleanup Recipes, is untouched by this column's
     # addition. Not a general-purpose link: other event types leave this NULL.
     privacy_case_id: Mapped[int | None] = mapped_column(ForeignKey("privacy_cases.id"), nullable=True)
+    # Set only for a PrivacyAction-scoped event (currently just
+    # PRIVACY_ACTION_NEEDS_RESEARCH) - nullable/backward-compatible, same
+    # pattern as privacy_case_id above. NULL for every other event type.
+    privacy_action_id: Mapped[int | None] = mapped_column(ForeignKey("privacy_actions.id"), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, default=datetime.datetime.utcnow)
 
 
