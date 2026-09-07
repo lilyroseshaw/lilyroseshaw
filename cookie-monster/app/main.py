@@ -35,8 +35,13 @@ from app.deletion_response_tracker import (
 )
 from app.gmail_scan import scan_inbox
 from app.mail import MailSendError, MailState, ReplyKind
-from app.models import Company, DeletionEvent, DeletionRecipe, MailMessage, PrivacyCase
-from app.privacy_action import attest_user_completed, ensure_just_the_essentials_actions, just_the_essentials_review
+from app.models import Company, DeletionEvent, DeletionRecipe, MailMessage, PrivacyAction, PrivacyCase
+from app.privacy_action import (
+    attest_user_completed,
+    ensure_just_the_essentials_actions,
+    just_the_essentials_dashboard_summary,
+    just_the_essentials_review,
+)
 from app.privacy_action_research import build_default_privacy_action_provider
 from app.privacy_action_resolver import resolve_privacy_action
 from app.privacy_case import (
@@ -44,7 +49,6 @@ from app.privacy_case import (
     full_clean_review_copy,
     full_clean_selected,
     get_or_create_privacy_case,
-    get_selected_recipe,
     just_the_essentials_intro_copy,
     leave_it_be_intro_copy,
     pantry_company_ids,
@@ -621,11 +625,21 @@ def _execution_plans_for_companies(db, companies: list[Company]) -> dict[int, di
     deletion_engine.py's module docstring.
 
     Also carries the recipe-picker/pre-commit review copy for the same
-    companies - see app.privacy_case's get_selected_recipe/
-    full_clean_review_copy/just_the_essentials_intro_copy. This is
+    companies - see app.privacy_case's full_clean_review_copy/
+    just_the_essentials_intro_copy. This is
     presentation-only: it never mutates Company, PrivacyCase,
     DeletionRecipe, or PrivacyAction, and it never touches the engine's
-    own capability decision above."""
+    own capability decision above.
+
+    For a JUST_THE_ESSENTIALS company, also carries a compact
+    `jte_progress_summary` (app.privacy_action.
+    just_the_essentials_dashboard_summary) over that company's existing
+    PrivacyAction rows, for the main card's state line - read-only, same
+    rows the JTE modal already shows in full detail. Never calls
+    ensure_just_the_essentials_actions here: select_company_recipe
+    already creates those two rows the moment JUST_THE_ESSENTIALS is
+    selected, so a plain read is enough and this stays a pure
+    presentation/read-model addition with no new persistence."""
     relevant = [c for c in companies if c.deletion_status in (DeletionStatus.READY, DeletionStatus.FAILED)]
     plans: dict[int, dict] = {}
     for company in relevant:
@@ -640,17 +654,27 @@ def _execution_plans_for_companies(db, companies: list[Company]) -> dict[int, di
         )
         recipe = db.query(DeletionRecipe).filter(DeletionRecipe.domain == company.domain).one_or_none()
         review_copy = full_clean_review_copy(company, recipe)
+        privacy_case = db.query(PrivacyCase).filter(PrivacyCase.company_id == company.id).one_or_none()
+        selected_recipe = privacy_case.selected_recipe if privacy_case else None
+        jte_progress_summary = None
+        if selected_recipe == RecipeChoice.JUST_THE_ESSENTIALS and privacy_case is not None:
+            actions = (
+                db.query(PrivacyAction).filter(PrivacyAction.privacy_case_id == privacy_case.id).all()
+            )
+            if actions:
+                jte_progress_summary = just_the_essentials_dashboard_summary(actions)
         plans[company.id] = {
             "capability": plan.capability,
             "reason": plan.reason,
             "consequences": plan.consequences,
             "action_text": action_text,
             "missing_identity_fields": plan.missing_identity_fields,
-            "selected_recipe": get_selected_recipe(db, company.id) or "",
+            "selected_recipe": selected_recipe or "",
             "recipe_summary": review_copy["summary"],
             "recipe_explanation": review_copy["explanation"],
             "recipe_tracking_note": review_copy["tracking_note"],
             "jte_explanation": just_the_essentials_intro_copy(company),
+            "jte_progress_summary": jte_progress_summary,
             "leave_it_be_explanation": leave_it_be_intro_copy(company),
         }
     return plans

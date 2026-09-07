@@ -148,7 +148,7 @@
           {% set plan = execution_plans.get(c.id) %}
           {% set jte_active = plan and plan.selected_recipe == "JUST_THE_ESSENTIALS" %}
           {% if jte_active %}
-          <p class="state-line state-success">🍪 Just the Essentials selected <span class="state-meta">· review cleanup actions</span></p>
+          <p class="state-line state-success">🍪 Just the Essentials selected <span class="state-meta">· {{ plan.jte_progress_summary or "review cleanup actions" }}</span></p>
           {% else %}
           <p class="state-line state-success">✅ Deletion method ready <span class="state-meta">· {{ c.deletion_method|lower|replace('_', ' ') }}</span></p>
           {% endif %}
@@ -214,7 +214,7 @@
           {% set plan = execution_plans.get(c.id) %}
           {% set jte_active = plan and plan.selected_recipe == "JUST_THE_ESSENTIALS" %}
           {% if jte_active %}
-          <p class="state-line state-success">🍪 Just the Essentials selected <span class="state-meta">· review cleanup actions</span></p>
+          <p class="state-line state-success">🍪 Just the Essentials selected <span class="state-meta">· {{ plan.jte_progress_summary or "review cleanup actions" }}</span></p>
           {% else %}
           <p class="state-line state-danger">⚠️ Couldn't send{% if c.deletion_error %} <span class="state-meta">· {{ c.deletion_error }}</span>{% endif %}</p>
           {% endif %}
