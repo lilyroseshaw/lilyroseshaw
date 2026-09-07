@@ -396,3 +396,168 @@ def test_just_the_essentials_remains_unchanged(client_db, client):
     preview = client.get(f"/api/companies/{company.id}/just-the-essentials/preview")
     assert preview.status_code == 200
     assert len(preview.json()["actions"]) == 2
+
+
+# --- regression: Pantry -> Just the Essentials must present the JTE
+# workflow, never Full Clean's "Delete my data" card projection -----------
+
+def test_pantry_to_just_the_essentials_card_shows_jte_next_action_not_delete_my_data(client_db, client):
+    """Live-browser-shaped repro: a company (e.g. a TikTok Shop Creator
+    fixture) was READY with a found web-form deletion method, sent to the
+    Pantry via Leave It Be, then changed to Just the Essentials from
+    there. The active card that comes back must present the Just the
+    Essentials workflow - never "Delete my data" / "Deletion method
+    ready" as though Full Clean were the selected recipe, even though
+    Company.deletion_status/deletion_method (Full Clean's own historical
+    fields) are still exactly READY/WEB_FORM underneath."""
+    company = _company(
+        client_db, name="TikTok Shop Creator", domain="tiktokshopcreator-fixture.com",
+        deletion_method=DeletionMethod.WEB_FORM, deletion_status=DeletionStatus.READY,
+        deletion_url="https://tiktokshopcreator-fixture.com/privacy/delete",
+    )
+    _select_recipe(client, company.id, "LEAVE_IT_BE")
+    resp = _select_recipe(client, company.id, "JUST_THE_ESSENTIALS")
+    assert resp.status_code == 200
+
+    dash = client.get("/dashboard")
+    soup = BeautifulSoup(dash.text, "html.parser")
+    card = soup.find(id=f"company-{company.id}")
+    assert card is not None
+
+    card_text = card.get_text()
+    assert "Delete my data" not in card_text
+    assert "Deletion method ready" not in card_text
+    assert "Just the Essentials selected" in card_text
+
+    button = card.find(class_="delete-my-data-btn")
+    assert button is not None
+    assert button.get_text(strip=True) == "Review cleanup"
+    assert button["data-selected-recipe"] == "JUST_THE_ESSENTIALS"
+
+    # And it's genuinely wired to the JTE workflow, not a dead end.
+    preview = client.get(f"/api/companies/{company.id}/just-the-essentials/preview")
+    assert preview.status_code == 200
+    assert len(preview.json()["actions"]) == 2
+
+
+def test_pantry_to_just_the_essentials_failed_status_also_shows_jte_next_action(client_db, client):
+    """Same projection bug, the other branch that renders the shared
+    button: a company stuck in FAILED (a stale Full Clean send failure)
+    must also present Just the Essentials, never "Send again"."""
+    company = _company(
+        client_db, deletion_status=DeletionStatus.FAILED, deletion_error="SMTP timeout",
+        deletion_method=DeletionMethod.EMAIL_REQUEST,
+    )
+    _select_recipe(client, company.id, "LEAVE_IT_BE")
+    _select_recipe(client, company.id, "JUST_THE_ESSENTIALS")
+
+    dash = client.get("/dashboard")
+    soup = BeautifulSoup(dash.text, "html.parser")
+    card = soup.find(id=f"company-{company.id}")
+    card_text = card.get_text()
+    assert "Send again" not in card_text
+    assert "Couldn't send" not in card_text
+    assert "Just the Essentials selected" in card_text
+    button = card.find(class_="delete-my-data-btn")
+    assert button.get_text(strip=True) == "Review cleanup"
+
+
+def test_pantry_to_just_the_essentials_triggers_no_external_action(client_db, client):
+    """Changing FROM Leave It Be TO Just the Essentials must never itself
+    research, submit, send Gmail, execute deletion, or opt out - it is
+    the exact same intent-only select_recipe() path as any other recipe
+    change."""
+    company = _company(
+        client_db, deletion_status=DeletionStatus.READY, deletion_method=DeletionMethod.WEB_FORM,
+        deletion_url="https://fabricated-corp.com/privacy/delete",
+    )
+    _select_recipe(client, company.id, "LEAVE_IT_BE")
+    with patch("app.google_oauth.send_email") as mock_send:
+        resp = _select_recipe(client, company.id, "JUST_THE_ESSENTIALS")
+    assert resp.status_code == 200
+    mock_send.assert_not_called()
+
+    client_db.expire_all()
+    fetched = client_db.query(Company).filter(Company.id == company.id).one()
+    assert fetched.deletion_requested_at is None
+    assert fetched.deletion_thread_id is None
+    assert fetched.waiting_on is None
+    assert client_db.query(DeletionEvent).filter(DeletionEvent.event_type == EventType.EMAIL_SENT).count() == 0
+    assert client_db.query(DeletionEvent).filter(DeletionEvent.event_type == EventType.EXECUTION_STARTED).count() == 0
+    assert client_db.query(DeletionEvent).filter(
+        DeletionEvent.event_type == EventType.PRIVACY_ACTION_METHOD_FOUND
+    ).count() == 0  # JTE research is never auto-triggered by a recipe change either
+
+    # The two PrivacyAction rows exist (materialized), but both still
+    # honestly sit at NEEDS_RESEARCH - nothing was researched/opted out.
+    case = client_db.query(PrivacyCase).filter(PrivacyCase.company_id == company.id).one()
+    actions = client_db.query(PrivacyAction).filter(PrivacyAction.privacy_case_id == case.id).all()
+    assert len(actions) == 2
+    assert all(a.status == "NEEDS_RESEARCH" for a in actions)
+
+
+def test_pantry_to_just_the_essentials_preserves_historical_full_clean_evidence(client_db, client):
+    """Company.deletion_method/deletion_status/deletion_url (Full Clean's
+    own historical fields) must remain exactly as they are - current
+    recipe intent changes which workflow is PRESENTED, never rewrites or
+    erases what actually happened/was found."""
+    company = _company(
+        client_db, deletion_status=DeletionStatus.READY, deletion_method=DeletionMethod.WEB_FORM,
+        deletion_url="https://fabricated-corp.com/privacy/delete", deletion_verified=True,
+    )
+    _select_recipe(client, company.id, "LEAVE_IT_BE")
+    _select_recipe(client, company.id, "JUST_THE_ESSENTIALS")
+
+    client_db.expire_all()
+    fetched = client_db.query(Company).filter(Company.id == company.id).one()
+    assert fetched.deletion_status == DeletionStatus.READY
+    assert fetched.deletion_method == DeletionMethod.WEB_FORM
+    assert fetched.deletion_url == "https://fabricated-corp.com/privacy/delete"
+    assert fetched.deletion_verified is True
+
+
+# --- symmetric invariant: recipe -> workflow projection ---------------------
+
+def test_symmetric_invariant_full_clean_shows_delete_my_data(client_db, client):
+    company = _company(client_db, deletion_status=DeletionStatus.READY)
+    _select_recipe(client, company.id, "FULL_CLEAN")
+
+    dash = client.get("/dashboard")
+    soup = BeautifulSoup(dash.text, "html.parser")
+    button = soup.find(id=f"company-{company.id}").find(class_="delete-my-data-btn")
+    assert button.get_text(strip=True) == "Delete my data"
+    assert button["data-selected-recipe"] == "FULL_CLEAN"
+
+
+def test_symmetric_invariant_just_the_essentials_shows_review_cleanup(client_db, client):
+    company = _company(client_db, deletion_status=DeletionStatus.READY)
+    _select_recipe(client, company.id, "JUST_THE_ESSENTIALS")
+
+    dash = client.get("/dashboard")
+    soup = BeautifulSoup(dash.text, "html.parser")
+    button = soup.find(id=f"company-{company.id}").find(class_="delete-my-data-btn")
+    assert button.get_text(strip=True) == "Review cleanup"
+    assert button["data-selected-recipe"] == "JUST_THE_ESSENTIALS"
+
+
+def test_symmetric_invariant_leave_it_be_shows_in_pantry_not_active(client_db, client):
+    company = _company(client_db, deletion_status=DeletionStatus.READY)
+    _select_recipe(client, company.id, "LEAVE_IT_BE")
+
+    dash = client.get("/dashboard")
+    soup = BeautifulSoup(dash.text, "html.parser")
+    assert soup.find(id="merge-select-scope").find(id=f"company-{company.id}") is None
+    assert soup.find(class_="pantry-section").find(id=f"company-{company.id}") is not None
+
+
+def test_symmetric_invariant_no_recipe_selected_keeps_legacy_delete_my_data(client_db, client):
+    """selected_recipe=None (no PrivacyCase choice made yet) must keep
+    exactly the pre-Pantry legacy behavior - "Delete my data", not a
+    change in wording just because the Pantry milestone shipped."""
+    company = _company(client_db, deletion_status=DeletionStatus.READY)
+
+    dash = client.get("/dashboard")
+    soup = BeautifulSoup(dash.text, "html.parser")
+    button = soup.find(id=f"company-{company.id}").find(class_="delete-my-data-btn")
+    assert button.get_text(strip=True) == "Delete my data"
+    assert button["data-selected-recipe"] == ""

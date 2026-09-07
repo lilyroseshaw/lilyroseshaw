@@ -502,6 +502,44 @@ def test_pantry_change_recipe_back_to_full_clean_removes_from_pantry_live(live_s
     assert active_card.count() == 1
 
 
+def test_pantry_change_recipe_to_just_the_essentials_shows_jte_workflow_not_delete_my_data(live_server, page):
+    """Regression repro (real-browser): Widget Co starts active and
+    READY (a real found web-form method) -> Leave It Be -> Pantry ->
+    "Change recipe" -> Just the Essentials. The company must return to
+    the active area presenting the Just the Essentials workflow - never
+    "Delete my data"/"Deletion method ready" as though Full Clean were
+    still the selected recipe."""
+    base_url, company_id = live_server
+    page.goto(f"{base_url}/dashboard")
+    page.click(".delete-my-data-btn")
+    page.click("#deletion-modal-leave-it-be-submit")
+    page.wait_for_load_state("load")
+    page.wait_for_timeout(300)
+
+    page.click(".pantry-section summary")
+    page.locator(f".pantry-section #company-{company_id} .delete-my-data-btn").click()
+    page.wait_for_timeout(300)
+    page.click("#deletion-modal-jte-submit")
+    page.wait_for_load_state("load")
+    page.wait_for_timeout(300)
+
+    active_card = page.locator(f"#merge-select-scope #company-{company_id}")
+    assert active_card.count() == 1, "the company must return to the active area"
+    card_text = active_card.inner_text()
+    assert "Delete my data" not in card_text
+    assert "Deletion method ready" not in card_text
+    assert "Just the Essentials selected" in card_text
+
+    button = active_card.locator(".delete-my-data-btn")
+    assert button.inner_text().strip() == "Review cleanup"
+
+    # And it genuinely opens the JTE review, not a dead end.
+    button.click()
+    page.wait_for_timeout(500)
+    assert page.locator("#deletion-modal-jte-review").is_visible()
+    assert page.locator("#deletion-modal-confirm").is_hidden()
+
+
 def test_leave_it_be_flow_uses_bakers_dozen_branding(live_server, page):
     base_url, _ = live_server
     page.goto(f"{base_url}/dashboard")

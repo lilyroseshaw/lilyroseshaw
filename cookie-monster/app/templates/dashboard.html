@@ -146,7 +146,12 @@
 
         {% elif c.deletion_status == "READY" %}
           {% set plan = execution_plans.get(c.id) %}
+          {% set jte_active = plan and plan.selected_recipe == "JUST_THE_ESSENTIALS" %}
+          {% if jte_active %}
+          <p class="state-line state-success">🍪 Just the Essentials selected <span class="state-meta">· review cleanup actions</span></p>
+          {% else %}
           <p class="state-line state-success">✅ Deletion method ready <span class="state-meta">· {{ c.deletion_method|lower|replace('_', ' ') }}</span></p>
+          {% endif %}
           <button type="button" class="btn btn-primary btn-delete delete-my-data-btn"
             data-id="{{ c.id }}"
             data-name="{{ c.name|e }}"
@@ -162,7 +167,7 @@
             data-recipe-tracking="{{ (plan.recipe_tracking_note if plan else '')|e }}"
             data-jte-explanation="{{ (plan.jte_explanation if plan else '')|e }}"
             data-leave-it-be-explanation="{{ (plan.leave_it_be_explanation if plan else '')|e }}"
-          >Delete my data</button>
+          >{{ "Review cleanup" if jte_active else "Delete my data" }}</button>
 
         {% elif c.deletion_status == "USER_ACTION_REQUIRED" %}
           <p class="state-line state-warning">🔑 Needs a visit to {{ c.name }}'s own site.</p>
@@ -207,7 +212,12 @@
 
         {% elif c.deletion_status == "FAILED" %}
           {% set plan = execution_plans.get(c.id) %}
+          {% set jte_active = plan and plan.selected_recipe == "JUST_THE_ESSENTIALS" %}
+          {% if jte_active %}
+          <p class="state-line state-success">🍪 Just the Essentials selected <span class="state-meta">· review cleanup actions</span></p>
+          {% else %}
           <p class="state-line state-danger">⚠️ Couldn't send{% if c.deletion_error %} <span class="state-meta">· {{ c.deletion_error }}</span>{% endif %}</p>
+          {% endif %}
           <button type="button" class="btn btn-primary btn-small delete-my-data-btn"
             data-id="{{ c.id }}" data-name="{{ c.name|e }}" data-method="{{ c.deletion_method }}"
             data-capability="{{ plan.capability if plan else 'MANUAL_HANDOFF' }}"
@@ -221,7 +231,7 @@
             data-recipe-tracking="{{ (plan.recipe_tracking_note if plan else '')|e }}"
             data-jte-explanation="{{ (plan.jte_explanation if plan else '')|e }}"
             data-leave-it-be-explanation="{{ (plan.leave_it_be_explanation if plan else '')|e }}"
-          >Send again</button>
+          >{{ "Review cleanup" if jte_active else "Send again" }}</button>
         {% endif %}
 
         {% if c.waiting_on == "COMPANY" and c.deletion_thread_id %}
