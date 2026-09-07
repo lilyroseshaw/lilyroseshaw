@@ -63,7 +63,7 @@
 <div class="company-list" id="merge-select-scope">
 {% for c in companies %}
   {% set meta = card_meta.get(c.id, {}) %}
-  <article class="company-card status-{{ c.status }}{% if checked_id and checked_id|int == c.id %} just-updated{% endif %}" data-id="{{ c.id }}" id="company-{{ c.id }}" data-pantry="false">
+  <article class="company-card status-{{ c.status }}{% if checked_id and checked_id|int == c.id %} just-updated{% endif %}" data-id="{{ c.id }}" id="company-{{ c.id }}" data-pantry="false" data-top-level-state="{{ top_level_states.get(c.id, '') }}">
 
     <header class="card-head">
       <div class="card-id">
@@ -491,7 +491,7 @@
   <div class="pantry-list">
   {% for c in pantry_companies %}
     {% set plan = pantry_recipe_copy.get(c.id) %}
-    <article class="company-card pantry-card" data-id="{{ c.id }}" id="company-{{ c.id }}" data-pantry="true">
+    <article class="company-card pantry-card" data-id="{{ c.id }}" id="company-{{ c.id }}" data-pantry="true" data-top-level-state="{{ top_level_states.get(c.id, '') }}">
       <div class="pantry-card-row">
         <div class="card-id">
           <h3>{{ c.name }}</h3>

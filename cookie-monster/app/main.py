@@ -44,6 +44,7 @@ from app.privacy_action import (
 )
 from app.privacy_action_research import build_default_privacy_action_provider
 from app.privacy_action_resolver import resolve_privacy_action
+from app.top_level_state import derive_top_level_state
 from app.privacy_case import (
     InvalidRecipeChoiceError,
     full_clean_review_copy,
@@ -324,6 +325,30 @@ def _card_meta_for_companies(companies: list[Company]) -> dict[int, dict]:
             "relationship_label": _RELATIONSHIP_LABELS.get(c.relationship_type, "Found in your inbox"),
         }
     return meta
+
+
+def _top_level_states_for_companies(db, companies: list[Company]) -> dict[int, str]:
+    """One TopLevelState.* (app/top_level_state.py) per company - the
+    single authoritative destination the upcoming UI navigates by, so
+    templates/JS branch on this instead of re-deriving it from
+    deletion_status/selected_recipe themselves. Covers EVERY company
+    passed in (not just the READY/FAILED subset
+    _execution_plans_for_companies covers) - every card has exactly one
+    top-level destination regardless of its current deletion_status.
+
+    Pure read: queries PrivacyCase/PrivacyAction the same way
+    _execution_plans_for_companies already does, but writes nothing -
+    app.top_level_state.derive_top_level_state (and the
+    app.case_outcome.derive_case_outcome it's built on) never mutate their
+    inputs."""
+    states: dict[int, str] = {}
+    for company in companies:
+        privacy_case = db.query(PrivacyCase).filter(PrivacyCase.company_id == company.id).one_or_none()
+        actions = None
+        if privacy_case is not None and privacy_case.selected_recipe == RecipeChoice.JUST_THE_ESSENTIALS:
+            actions = db.query(PrivacyAction).filter(PrivacyAction.privacy_case_id == privacy_case.id).all()
+        states[company.id] = derive_top_level_state(company, privacy_case, actions)
+    return states
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -747,6 +772,7 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         execution_plans = _execution_plans_for_companies(db, active_companies)
         card_meta = _card_meta_for_companies(active_companies)
         pantry_recipe_copy = _recipe_picker_copy_for_companies(db, pantry_companies)
+        top_level_states = _top_level_states_for_companies(db, active_companies + pantry_companies)
         unread_mail_count = mail.unread_mail_count(db)
         checked_id_raw = request.query_params.get("checked")
         checked_company_name = None
@@ -788,6 +814,7 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         "companies": active_companies,
         "pantry_companies": pantry_companies,
         "pantry_recipe_copy": pantry_recipe_copy,
+        "top_level_states": top_level_states,
         "counts": counts,
         "status_filter": status,
         "query": q,
