@@ -993,7 +993,24 @@ def select_company_recipe(company_id: int, recipe: str = Form(...)):
     idempotent step, not folded into select_recipe() itself, so recipe
     selection stays generically intent-only for every recipe. This still
     executes nothing: it only materializes what Baker's Dozen will track,
-    at NEEDS_RESEARCH, for the user's Just the Essentials preview."""
+    at NEEDS_RESEARCH, for the user's Just the Essentials preview.
+
+    For LEAVE_IT_BE specifically, also pauses any EMAIL_REQUEST follow-up
+    chase already in flight (chase_engine.pause_followups) - same
+    separate-explicit-step pattern as the JUST_THE_ESSENTIALS branch
+    above, never folded into select_recipe() itself. Today's UI only ever
+    offers a recipe choice (including LEAVE_IT_BE) from READY/FAILED,
+    neither of which has an active chase yet - but this route is the
+    actual authority a direct POST reaches regardless of which button the
+    current HTML happens to render, and "the user chose to leave this
+    company alone" must mean Baker's Dozen actually stops nudging it, not
+    merely that today's UI doesn't happen to expose a path to this
+    combination. pause_followups is the SAME idempotent, already-tested
+    mechanism the dashboard's own manual "Pause follow-ups" button uses -
+    never a new chase concept, never a change to cadence, and it touches
+    only Company.followups_paused (get_companies_due_for_followup's own
+    existing gate), never waiting_on/next_followup_at/deletion_status -
+    so no historical evidence is altered."""
     db = get_session()
     try:
         company = db.get(Company, company_id)
@@ -1006,6 +1023,9 @@ def select_company_recipe(company_id: int, recipe: str = Form(...)):
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if privacy_case.selected_recipe == RecipeChoice.JUST_THE_ESSENTIALS:
             ensure_just_the_essentials_actions(db, privacy_case)
+        elif privacy_case.selected_recipe == RecipeChoice.LEAVE_IT_BE:
+            chase_engine.pause_followups(company)
+            db.commit()
     finally:
         db.close()
     return _redirect_to_company_card(company_id)
