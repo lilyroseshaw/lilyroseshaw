@@ -44,7 +44,7 @@ from app.privacy_action import (
 )
 from app.privacy_action_research import build_default_privacy_action_provider
 from app.privacy_action_resolver import resolve_privacy_action
-from app.top_level_state import derive_top_level_state
+from app.top_level_state import TopLevelState, derive_top_level_state
 from app.privacy_case import (
     InvalidRecipeChoiceError,
     full_clean_review_copy,
@@ -349,6 +349,22 @@ def _top_level_states_for_companies(db, companies: list[Company]) -> dict[int, s
             actions = db.query(PrivacyAction).filter(PrivacyAction.privacy_case_id == privacy_case.id).all()
         states[company.id] = derive_top_level_state(company, privacy_case, actions)
     return states
+
+
+def _home_status_line(needs_you_count: int, working_count: int, done_count: int) -> str:
+    """One calm, plain-language sentence for the home header - a pure
+    formatting decision over counts main.py already computed (never a new
+    derivation of workflow state; see app.top_level_state for that).
+    Needs You takes priority when non-empty (it's the one thing actually
+    worth a user's attention right now); otherwise a quiet "still working"
+    or "all caught up" line, never alarming."""
+    if needs_you_count > 0:
+        return f"{needs_you_count} compan{'y needs' if needs_you_count == 1 else 'ies need'} your attention."
+    if working_count > 0:
+        return "Baker's Dozen is cleaning things up."
+    if done_count > 0:
+        return "You're all caught up."
+    return "Nothing to clean up yet - run a scan to get started."
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -773,6 +789,20 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
         card_meta = _card_meta_for_companies(active_companies)
         pantry_recipe_copy = _recipe_picker_copy_for_companies(db, pantry_companies)
         top_level_states = _top_level_states_for_companies(db, active_companies + pantry_companies)
+        # Home screen section placement - READ-ONLY bucketing over the
+        # already-computed top_level_states, never a second derivation of
+        # workflow meaning (see app.top_level_state's own docstring on why
+        # that must never happen in a template either). A company still
+        # awaiting the user's initial "is this you?" match confirmation
+        # (status pending/rejected) predates recipe selection entirely -
+        # it has no privacy-workflow top-level state yet, so it's kept in
+        # its own small review list rather than folded into any of the
+        # four sections.
+        match_review_companies = [c for c in active_companies if c.status != "confirmed"]
+        confirmed_companies = [c for c in active_companies if c.status == "confirmed"]
+        needs_you_companies = [c for c in confirmed_companies if top_level_states.get(c.id) == TopLevelState.NEEDS_YOU]
+        working_companies = [c for c in confirmed_companies if top_level_states.get(c.id) == TopLevelState.WORKING]
+        done_companies = [c for c in confirmed_companies if top_level_states.get(c.id) == TopLevelState.DONE]
         unread_mail_count = mail.unread_mail_count(db)
         checked_id_raw = request.query_params.get("checked")
         checked_company_name = None
@@ -812,6 +842,13 @@ def _dashboard_context(request: Request, status: str, q: str, **extra) -> dict:
     context = {
         "request": request,
         "companies": active_companies,
+        "match_review_companies": match_review_companies,
+        "needs_you_companies": needs_you_companies,
+        "working_companies": working_companies,
+        "done_companies": done_companies,
+        "home_status_line": _home_status_line(
+            len(needs_you_companies), len(working_companies), len(done_companies)
+        ),
         "pantry_companies": pantry_companies,
         "pantry_recipe_copy": pantry_recipe_copy,
         "top_level_states": top_level_states,

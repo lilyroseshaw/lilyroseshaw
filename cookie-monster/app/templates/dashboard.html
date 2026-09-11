@@ -1,9 +1,382 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — Baker's Dozen{% endblock %}
+{% block title %}Home — Baker's Dozen{% endblock %}
 {% block content %}
 
-<section class="hero">
-  <h1>Clean up your digital footprint, one company at a time.</h1>
+{#
+  HOME SCREEN - organized around the four consumer-facing destinations a
+  company's PrivacyCase can project into (see app/top_level_state.py):
+  NEEDS YOU, WORKING, DONE, PANTRY. Section placement below is a pure
+  read-only bucketing of `top_level_states` already computed in main.py's
+  _dashboard_context - this template never re-derives which bucket a
+  company belongs in, it only renders whichever list it was handed.
+
+  Every company card shares ONE markup shape (the company_card macro
+  below), reused across every section, "New matches", and the Pantry, so
+  the visual language stays consistent no matter which state a company is
+  in - see the macro's own docstring for exactly what it takes.
+#}
+
+{% macro company_card(c, card_meta, execution_plans, research_info, stage_labels, threshold, checked_id, check_message, check_result, response_tracking_enabled, duplicate_id, attach_preview, attach_preview_error) %}
+{#
+  One self-contained card for company `c`. Every argument here is a
+  read-only lookup table already built in main.py - this macro only
+  formats what it's given, it never queries the database or decides
+  workflow state itself. Kept as ONE shared macro (rather than copy-pasted
+  per section) so "New matches", Needs You, Working, and Done can never
+  drift into three different visual languages for the same underlying
+  card.
+#}
+{% set meta = card_meta.get(c.id, {}) %}
+<article class="company-card status-{{ c.status }}{% if checked_id and checked_id|int == c.id %} just-updated{% endif %}" data-id="{{ c.id }}" id="company-{{ c.id }}" data-pantry="false" data-top-level-state="{{ top_level_states.get(c.id, '') }}">
+
+  <header class="card-head">
+    <div class="card-id">
+      <h3>{{ c.name }}</h3>
+      <p class="domain">{{ c.domain }}</p>
+    </div>
+    <span class="status-badge tone-{{ meta.badge_tone }}">{{ meta.badge_text }}</span>
+  </header>
+
+  {% if meta.stage_index is not none %}
+  <div class="progress-track" role="img" aria-label="Progress: {{ stage_labels[meta.stage_index] }} ({{ meta.stage_index + 1 }} of {{ stage_labels|length }})">
+    {% for label in stage_labels %}
+    <span class="track-dot {% if loop.index0 < meta.stage_index %}is-done{% elif loop.index0 == meta.stage_index %}is-current{% else %}is-pending{% endif %}" title="{{ label }}"></span>
+    {% if not loop.last %}<span class="track-line {% if loop.index0 < meta.stage_index %}is-done{% else %}is-pending{% endif %}"></span>{% endif %}
+    {% endfor %}
+  </div>
+  <div class="track-labels" aria-hidden="true">
+    {% for label in stage_labels %}
+    <span class="{% if loop.index0 < meta.stage_index %}is-done{% elif loop.index0 == meta.stage_index %}is-current{% else %}is-pending{% endif %}">{{ label }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="card-main">
+    {% if c.status == "pending" %}
+    <div class="match-block">
+      <p class="match-label">{{ meta.confidence_label }}<span class="match-why" title="{{ meta.confidence_explainer }}">?</span></p>
+      <p class="match-reason">{{ meta.relationship_label }}</p>
+      <p class="match-ask">Is this a company you recognize?</p>
+      <div class="action-row">
+        <form method="post" action="/api/companies/{{ c.id }}/confirm" data-loading-text="Confirming…">
+          <button type="submit" class="btn btn-primary btn-small">Yes, keep it</button>
+        </form>
+        <form method="post" action="/api/companies/{{ c.id }}/reject" data-loading-text="Removing…">
+          <button type="submit" class="btn btn-ghost btn-small">Not mine</button>
+        </form>
+      </div>
+    </div>
+
+    {% elif c.status == "rejected" %}
+    <div class="match-block">
+      <p class="state-line">You marked this "not mine."</p>
+      <form method="post" action="/api/companies/{{ c.id }}/confirm" data-loading-text="Confirming…">
+        <button type="submit" class="btn btn-ghost btn-small">Actually, keep it</button>
+      </form>
+    </div>
+
+    {% else %}
+    <section class="current-state deletion-{{ c.deletion_status|lower }}" aria-label="Current status">
+      {% if c.deletion_status == "NOT_STARTED" %}
+        <p class="state-line">We haven't found a way to reach {{ c.name }} yet.</p>
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/research" id="research-form-{{ c.id }}" data-company-id="{{ c.id }}" data-loading-text="Searching…">
+          <button type="submit" class="btn btn-primary btn-small">Find deletion method</button>
+        </form>
+
+      {% elif c.deletion_status == "METHOD_LOOKUP" %}
+        <p class="state-line"><span class="spinner" aria-hidden="true"></span> Looking for a way to reach {{ c.name }}…</p>
+        {# No form here on purpose - a fresh attempt is already running for
+           this company (see deletion_resolver.py's per-domain in-flight
+           guard). A live-but-inert placeholder, rather than nothing, so a
+           button that visually disappears between page loads never reads
+           as "the button did nothing" - it's disabled and explicitly
+           labeled instead of just absent. #}
+        <button type="button" class="btn btn-primary btn-small" disabled
+          title="A search for this company's deletion method is already running.">Searching…</button>
+
+      {% elif c.deletion_status == "UNKNOWN" %}
+        {% set info = research_info.get(c.id) %}
+        <p class="state-line">We'll try again soon{% if info and info.attempts %} <span class="state-meta">· tried {{ info.attempts }} of {{ threshold }} times</span>{% endif %}</p>
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/research" id="research-form-{{ c.id }}" data-company-id="{{ c.id }}" data-loading-text="Searching…">
+          <button type="submit" class="btn btn-primary btn-small">Search again</button>
+        </form>
+
+      {% elif c.deletion_status == "NO_METHOD_FOUND" %}
+        {% set info = research_info.get(c.id) %}
+        <p class="state-line state-warning">We couldn't find a way to reach {{ c.name }}{% if info and info.attempts %} <span class="state-meta">· tried {{ info.attempts }} times</span>{% endif %}</p>
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/research" id="research-form-{{ c.id }}" data-company-id="{{ c.id }}" data-loading-text="Searching…">
+          <button type="submit" class="btn btn-primary btn-small">Search again</button>
+        </form>
+
+      {% elif c.deletion_status == "READY" %}
+        {% set plan = execution_plans.get(c.id) %}
+        {% set jte_active = plan and plan.selected_recipe == "JUST_THE_ESSENTIALS" %}
+        {% if jte_active %}
+        <p class="state-line state-success">Just the Essentials <span class="state-meta">· {{ plan.jte_progress_summary or "review cleanup actions" }}</span></p>
+        {% else %}
+        <p class="state-line state-success">Ready to send<span class="state-meta">· {{ c.deletion_method|lower|replace('_', ' ') }}</span></p>
+        {% endif %}
+        <button type="button" class="btn btn-primary btn-delete delete-my-data-btn"
+          data-id="{{ c.id }}"
+          data-name="{{ c.name|e }}"
+          data-method="{{ c.deletion_method }}"
+          data-capability="{{ plan.capability if plan else 'MANUAL_HANDOFF' }}"
+          data-capability-reason="{{ (plan.reason if plan else '')|e }}"
+          data-action="{{ (plan.action_text if plan else '')|e }}"
+          data-details="{{ (c.deletion_instructions or '')|e }}"
+          data-consequences="{{ ((plan.consequences if plan else None) or '')|e }}"
+          data-selected-recipe="{{ (plan.selected_recipe if plan else '')|e }}"
+          data-recipe-summary="{{ (plan.recipe_summary if plan else '')|e }}"
+          data-recipe-explanation="{{ (plan.recipe_explanation if plan else '')|e }}"
+          data-recipe-tracking="{{ (plan.recipe_tracking_note if plan else '')|e }}"
+          data-jte-explanation="{{ (plan.jte_explanation if plan else '')|e }}"
+          data-leave-it-be-explanation="{{ (plan.leave_it_be_explanation if plan else '')|e }}"
+        >{{ "Review cleanup" if jte_active else "Delete my data" }}</button>
+
+      {% elif c.deletion_status == "USER_ACTION_REQUIRED" %}
+        <p class="state-line state-warning">{{ c.name }} needs you to finish this on their own site.</p>
+        {% if c.deletion_url %}
+        <a href="{{ c.deletion_url }}" target="_blank" rel="noopener" class="btn btn-primary btn-small">Continue on {{ c.name }}</a>
+        {% endif %}
+
+      {% elif c.deletion_status == "SUBMITTED" %}
+        {% if c.deletion_evidence and c.deletion_evidence.type == "user_reported" %}
+        <p class="state-line state-success">You marked this submitted{% if c.deletion_requested_at %} <span class="state-meta">· {{ c.deletion_requested_at.strftime('%b %d') }}</span>{% endif %}</p>
+        {% else %}
+        <p class="state-line state-success">Request sent{% if c.deletion_requested_at %} <span class="state-meta">· {{ c.deletion_requested_at.strftime('%b %d') }}</span>{% endif %} - waiting on {{ c.name }}</p>
+        {% endif %}
+
+      {% elif c.deletion_status == "IN_PROGRESS" %}
+        <p class="state-line">Request received - no action needed, waiting on {{ c.name }}.</p>
+
+      {% elif c.deletion_status == "VERIFICATION_NEEDED" %}
+        <p class="state-line state-warning">{{ c.name }} needs you to verify your identity or email.</p>
+        <p class="state-meta">Open Gmail and reply to {{ c.name }} yourself - Baker's Dozen never sends verification info for you.</p>
+
+      {% elif c.deletion_status == "MORE_INFO_REQUIRED" %}
+        <p class="state-line state-warning">{{ c.name }} needs more information from you.</p>
+        <p class="state-meta">Review their reply in Gmail and respond yourself.</p>
+
+      {% elif c.deletion_status == "UNKNOWN_RESPONSE" %}
+        <p class="state-line">{{ c.name }} replied, but we couldn't tell what it means yet.</p>
+
+      {% elif c.deletion_status == "ACCOUNT_CLOSED_DATA_UNVERIFIED" %}
+        <p class="state-line state-warning">{{ c.name }} closed the account, but didn't confirm your data was deleted.</p>
+        <p class="state-meta">Baker's Dozen is following up to ask whether your personal data was deleted.</p>
+
+      {% elif c.deletion_status == "ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED" %}
+        <p class="state-line state-warning">{{ c.name }} confirmed the account was deleted, but hasn't yet confirmed your personal information was.</p>
+        <p class="state-meta">Baker's Dozen is following up to ask.</p>
+
+      {% elif c.deletion_status == "COMPLETED" %}
+        <p class="state-line state-success state-celebrate">Deletion confirmed{% if c.deletion_completed_at %} <span class="state-meta">· {{ c.deletion_completed_at.strftime('%b %d, %Y') }}</span>{% endif %}{% if not (c.deletion_evidence and c.deletion_evidence.type == "user_reported") %} <span class="state-meta">· confirmed by {{ c.name }}</span>{% endif %}</p>
+
+      {% elif c.deletion_status == "REJECTED" %}
+        <p class="state-line state-danger">{{ c.name }} declined this request.</p>
+
+      {% elif c.deletion_status == "FAILED" %}
+        {% set plan = execution_plans.get(c.id) %}
+        {% set jte_active = plan and plan.selected_recipe == "JUST_THE_ESSENTIALS" %}
+        {% if jte_active %}
+        <p class="state-line state-success">Just the Essentials <span class="state-meta">· {{ plan.jte_progress_summary or "review cleanup actions" }}</span></p>
+        {% else %}
+        <p class="state-line state-danger">Couldn't send{% if c.deletion_error %} <span class="state-meta">· {{ c.deletion_error }}</span>{% endif %}</p>
+        {% endif %}
+        <button type="button" class="btn btn-primary btn-small delete-my-data-btn"
+          data-id="{{ c.id }}" data-name="{{ c.name|e }}" data-method="{{ c.deletion_method }}"
+          data-capability="{{ plan.capability if plan else 'MANUAL_HANDOFF' }}"
+          data-capability-reason="{{ (plan.reason if plan else '')|e }}"
+          data-action="Baker's Dozen will try sending this request again."
+          data-details="{{ (c.deletion_instructions or '')|e }}"
+          data-consequences="{{ ((plan.consequences if plan else None) or '')|e }}"
+          data-selected-recipe="{{ (plan.selected_recipe if plan else '')|e }}"
+          data-recipe-summary="{{ (plan.recipe_summary if plan else '')|e }}"
+          data-recipe-explanation="{{ (plan.recipe_explanation if plan else '')|e }}"
+          data-recipe-tracking="{{ (plan.recipe_tracking_note if plan else '')|e }}"
+          data-jte-explanation="{{ (plan.jte_explanation if plan else '')|e }}"
+          data-leave-it-be-explanation="{{ (plan.leave_it_be_explanation if plan else '')|e }}"
+        >{{ "Review cleanup" if jte_active else "Send again" }}</button>
+      {% endif %}
+
+      {% if c.waiting_on == "COMPANY" and c.deletion_thread_id %}
+      <div class="chase-state">
+        <p class="chase-state-title">Waiting on {{ c.name }}</p>
+        <p class="chase-state-detail">Request received. Baker's Dozen is following up automatically until this is resolved.</p>
+        <p class="chase-state-meta">
+          {% if c.followups_paused %}Follow-ups paused.{% elif c.next_followup_at %}Next follow-up: {{ c.next_followup_at|relative_time(future=True) }}{% endif %}
+        </p>
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/{{ 'resume-followups' if c.followups_paused else 'pause-followups' }}" data-loading-text="{{ 'Resuming…' if c.followups_paused else 'Pausing…' }}">
+          <button type="submit" class="btn btn-secondary btn-small">{{ 'Resume follow-ups' if c.followups_paused else 'Pause follow-ups' }}</button>
+        </form>
+      </div>
+      {% elif c.waiting_on == "ESCALATION_NEEDED" %}
+      <div class="chase-state chase-state-escalation">
+        <p class="chase-state-title">Needs your attention</p>
+        <p class="chase-state-detail">{{ c.name }} responded in a way that needs a human decision - automatic follow-ups have stopped.</p>
+      </div>
+      {% endif %}
+
+      {% if checked_id and checked_id|int == c.id and check_message %}
+      <p class="check-response-result" role="status" data-check-result="{{ check_result }}">{{ check_message }}</p>
+      {% endif %}
+
+      {% if response_tracking_enabled and c.deletion_thread_id and c.deletion_status in
+            ("SUBMITTED", "IN_PROGRESS", "VERIFICATION_NEEDED", "MORE_INFO_REQUIRED", "UNKNOWN_RESPONSE", "ACCOUNT_CLOSED_DATA_UNVERIFIED", "ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED") %}
+      <form method="post" action="/api/companies/{{ c.id }}/deletion/check-response" data-loading-text="Checking…" class="check-response-form" data-company-id="{{ c.id }}" data-company-name="{{ c.name|e }}">
+        <button type="submit" class="btn btn-ghost btn-small">Check for reply</button>
+      </form>
+      {% endif %}
+
+      {% if duplicate_id and duplicate_id|int == c.id %}
+      <div class="duplicate-warning">
+        <p>Already marked <strong>{{ c.deletion_status|lower }}</strong>. Send it again?</p>
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/execute" data-loading-text="Sending…">
+          <input type="hidden" name="force" value="true">
+          <button type="submit" class="btn btn-danger btn-small">Yes, send again</button>
+        </form>
+      </div>
+      {% endif %}
+    </section>
+    {% endif %}
+
+    <details class="card-details">
+      <summary>Details</summary>
+
+      {% if c.status == "confirmed" %}
+      {% if c.deletion_evidence and c.deletion_evidence.type == "gmail_reply" and c.deletion_evidence.quote %}
+      <p class="state-detail state-quote">"{{ c.deletion_evidence.quote }}"</p>
+      {% endif %}
+
+      {% if c.deletion_status in ("UNKNOWN", "NO_METHOD_FOUND") %}
+      {% set info = research_info.get(c.id) %}
+      {% if info %}
+      <p class="state-detail">
+        {%- if info.last_attempted_at %}Last tried {{ info.last_attempted_at.strftime('%b %d, %Y') }}.{% endif -%}
+        {%- if info.next_retry_at %} Next automatic retry ~{{ info.next_retry_at.strftime('%b %d, %Y') }}.{% endif -%}
+        {%- if info.failure_reason_label %} {{ info.failure_reason_label }}.{% endif -%}
+      </p>
+      {% if info.blocked_url %}
+      <p class="state-detail">We couldn't confirm this ourselves - you can check it yourself:
+        <a href="{{ info.blocked_url }}" target="_blank" rel="noopener">{{ info.blocked_url }}</a></p>
+      {% endif %}
+      {% endif %}
+      {% endif %}
+
+      {% if c.deletion_status in ("USER_ACTION_REQUIRED", "VERIFICATION_NEEDED") %}
+      <details class="secondary-action">
+        <summary>Mark as completed</summary>
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/mark-completed" class="mark-completed-form" data-loading-text="Saving…">
+          <input type="text" name="evidence_note" placeholder="Optional: confirmation # or note">
+          <button type="submit" class="btn btn-ghost btn-small"
+            onclick="return confirm('Only mark this completed if the request was actually finished on {{ c.name|e }}’s site.');">
+            Mark as completed
+          </button>
+        </form>
+      </details>
+      {% endif %}
+
+      {% set attach_eligible = response_tracking_enabled and c.deletion_status not in ("COMPLETED", "REJECTED", "FAILED") %}
+      {% set attach_pending_for_this_company = (attach_preview and attach_preview.company_id == c.id) or (attach_preview_error and attach_preview_error.company_id == c.id) %}
+      {% if attach_eligible or attach_pending_for_this_company %}
+      <div class="attach-thread-block">
+        {% if attach_preview and attach_preview.company_id == c.id %}
+        <p class="state-detail">Is this {{ c.name }}'s confirmation email?</p>
+        <p class="attach-preview-line"><strong>From:</strong> {{ attach_preview['from']|e }}</p>
+        <p class="attach-preview-line"><strong>Subject:</strong> {{ attach_preview.subject|e }}</p>
+        <p class="attach-preview-line"><strong>Date:</strong> {{ attach_preview.date|e }}</p>
+        <form method="post" action="/api/companies/{{ c.id }}/deletion/attach-thread/confirm" style="display:inline" data-loading-text="Adding…">
+          <input type="hidden" name="message_id" value="{{ attach_preview.message_id }}">
+          <button type="submit" class="btn btn-ghost btn-small">Yes, add this email</button>
+        </form>
+        <a href="/dashboard" class="btn btn-ghost btn-small">Cancel</a>
+
+        {% else %}
+        {% if attach_preview_error and attach_preview_error.company_id == c.id %}
+        <p class="state-detail attach-error">{{ attach_preview_error.message }}</p>
+        {% endif %}
+        {% if attach_eligible %}
+        <details class="secondary-action">
+          {% if c.deletion_thread_id %}
+          <summary>Seeing a reply in Gmail that isn't showing here?</summary>
+          <p class="state-detail">Paste the Gmail link or message ID for {{ c.name }}'s actual reply and Baker's Dozen will start tracking that conversation instead. We'll show you just the sender/subject/date before changing anything - never the message body.</p>
+          {% else %}
+          <summary>Submitted this yourself? Add the confirmation email</summary>
+          <p class="state-detail">Paste the Gmail link or message ID for {{ c.name }}'s confirmation email. We'll show you just the sender/subject/date before adding anything - never the message body.</p>
+          {% endif %}
+          <form method="post" action="/api/companies/{{ c.id }}/deletion/attach-thread/preview" data-loading-text="Looking up…">
+            <input type="text" name="gmail_ref" placeholder="Gmail link or message ID" required>
+            <button type="submit" class="btn btn-ghost btn-small">{{ "Use this email instead" if c.deletion_thread_id else "Add confirmation email" }}</button>
+          </form>
+        </details>
+        {% endif %}
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <details class="secondary-action">
+        <summary>Not a match?</summary>
+        <div class="action-row">
+          <form method="post" action="/api/companies/{{ c.id }}/reject" data-loading-text="Removing…">
+            <button type="submit" class="btn btn-ghost btn-small">Not my company</button>
+          </form>
+          <form method="post" action="/api/companies/{{ c.id }}/reset" data-loading-text="Undoing…">
+            <button type="submit" class="btn btn-ghost btn-small">Review again</button>
+          </form>
+        </div>
+      </details>
+      {% endif %}
+
+      <p class="evidence-line">{{ c.evidence_count }} piece{{ 's' if c.evidence_count != 1 else '' }} of evidence ({{ c.evidence_types | join(', ') }})</p>
+      <p class="dates">First seen {{ c.first_seen.strftime('%Y-%m-%d') }} · Last seen {{ c.last_seen.strftime('%Y-%m-%d') }}</p>
+      {% if c.example_subjects %}
+      <p><strong>Example subject lines:</strong></p>
+      <ul>{% for s in c.example_subjects %}<li>{{ s }}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if c.detection_reasons %}
+      <p><strong>Detected because:</strong></p>
+      <ul>{% for r in c.detection_reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+      {% endif %}
+
+      <details class="secondary-action">
+        <summary>Correct company info</summary>
+        <form method="post" action="/api/companies/{{ c.id }}/correct" class="correct-form" data-loading-text="Saving…">
+          <label>Company name
+            <input type="text" name="name" value="{{ c.name }}">
+          </label>
+          <label>Relationship type
+            <select name="relationship_type">
+              {% for opt in ["transactional", "account", "subscription", "marketing", "mixed"] %}
+              <option value="{{ opt }}" {% if c.relationship_type == opt %}selected{% endif %}>{{ opt }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="submit" class="btn btn-ghost btn-small">Save correction</button>
+        </form>
+        <label class="merge-checkbox">
+          <input type="checkbox" class="merge-pick" value="{{ c.id }}"> select for merge
+        </label>
+      </details>
+    </details>
+  </div>
+</article>
+{% endmacro %}
+
+<section class="home-header">
+  <p class="home-status-line">{{ home_status_line }}</p>
+  <div class="home-summary" role="group" aria-label="Cleanup activity summary">
+    <div class="home-summary-stat home-summary-stat--needs-you">
+      <span class="home-summary-num">{{ needs_you_companies|length }}</span>
+      <span class="home-summary-label">need you</span>
+    </div>
+    <div class="home-summary-stat home-summary-stat--working">
+      <span class="home-summary-num">{{ working_companies|length }}</span>
+      <span class="home-summary-label">working</span>
+    </div>
+    <div class="home-summary-stat home-summary-stat--done">
+      <span class="home-summary-num">{{ done_companies|length }}</span>
+      <span class="home-summary-label">done</span>
+    </div>
+  </div>
   {% if scanned is not none %}
   <p class="scan-summary">Last scan: {{ scanned }} matching messages processed · {{ created }} new companies · {{ updated }} updated.</p>
   {% endif %}
@@ -11,7 +384,7 @@
 
 {% if unread_mail_count and unread_mail_count > 0 %}
 <div class="mail-banner" id="mail-banner">
-  <span class="mail-banner-icon" aria-hidden="true">📬</span>
+  <span class="mail-banner-icon" aria-hidden="true"></span>
   <div class="mail-banner-text">
     <p class="mail-banner-title">You've got mail!</p>
     <p class="mail-banner-sub">{{ unread_mail_count }} compan{{ 'y' if unread_mail_count == 1 else 'ies' }} wrote back.</p>
@@ -23,34 +396,10 @@
 </div>
 {% endif %}
 
-<div class="card progress-summary">
-  <div class="progress-summary-stats">
-    <div class="stat"><span class="stat-num">{{ counts.total }}</span><span class="stat-label">found</span></div>
-    <div class="stat"><span class="stat-num">{{ counts.methods_ready }}</span><span class="stat-label">ready to send</span></div>
-    <div class="stat"><span class="stat-num">{{ counts.requests_sent }}</span><span class="stat-label">requests out</span></div>
-    <div class="stat stat-done"><span class="stat-num">{{ counts.deleted }}</span><span class="stat-label">cleaned</span></div>
-  </div>
-  {% if counts.confirmed > 0 %}
-  <div class="progress-summary-bar" role="progressbar" aria-valuenow="{{ counts.deleted }}" aria-valuemin="0" aria-valuemax="{{ counts.confirmed }}" aria-label="Companies fully cleaned up">
-    <div class="progress-summary-bar-fill" style="width: {{ (counts.deleted / counts.confirmed * 100) | round(1) }}%"></div>
-  </div>
-  <p class="progress-summary-caption">{{ counts.deleted }} of {{ counts.confirmed }} confirmed companies fully cleaned up</p>
-  {% endif %}
-</div>
-
 <div class="card toolbar">
   <form method="get" action="/dashboard" class="filter-form">
     <input type="text" name="q" placeholder="Search companies…" value="{{ query }}">
-    <select name="status">
-      <option value="all" {% if status_filter == "all" %}selected{% endif %}>All</option>
-      <option value="action" {% if status_filter == "action" %}selected{% endif %}>Needs action</option>
-      <option value="waiting" {% if status_filter == "waiting" %}selected{% endif %}>Waiting</option>
-      <option value="done" {% if status_filter == "done" %}selected{% endif %}>Completed</option>
-    </select>
-    <button type="submit" class="btn btn-ghost">Filter</button>
-  </form>
-  <form method="post" action="/api/delete-all" onsubmit="return confirm('Delete ALL discovered company data from the local database? This cannot be undone. (Your Gmail connection is not affected.)');">
-    <button type="submit" class="btn btn-danger btn-small">Delete all imported data</button>
+    <button type="submit" class="btn btn-ghost">Search</button>
   </form>
 </div>
 
@@ -60,343 +409,56 @@
 </div>
 {% endif %}
 
-<div class="company-list" id="merge-select-scope">
-{% for c in companies %}
-  {% set meta = card_meta.get(c.id, {}) %}
-  <article class="company-card status-{{ c.status }}{% if checked_id and checked_id|int == c.id %} just-updated{% endif %}" data-id="{{ c.id }}" id="company-{{ c.id }}" data-pantry="false" data-top-level-state="{{ top_level_states.get(c.id, '') }}">
+{% if match_review_companies %}
+<section class="home-section" aria-labelledby="section-new-matches">
+  <h2 id="section-new-matches" class="section-heading section-heading--neutral">New matches to review<span class="section-count">{{ match_review_companies|length }}</span></h2>
+  <p class="section-subtitle">Is this you? Confirming keeps Baker's Dozen looking after it.</p>
+  <div class="company-list">
+    {% for c in match_review_companies %}
+    {{ company_card(c, card_meta, execution_plans, research_info, stage_labels, threshold, checked_id, check_message, check_result, response_tracking_enabled, duplicate_id, attach_preview, attach_preview_error) }}
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 
-    <header class="card-head">
-      <div class="card-id">
-        <h3>{{ c.name }}</h3>
-        <p class="domain">{{ c.domain }}</p>
-      </div>
-      <span class="status-badge tone-{{ meta.badge_tone }}">{{ meta.badge_text }}</span>
-    </header>
+<div id="merge-select-scope">
 
-    {% if meta.stage_index is not none %}
-    <div class="progress-track" role="img" aria-label="Progress: {{ stage_labels[meta.stage_index] }} ({{ meta.stage_index + 1 }} of {{ stage_labels|length }})">
-      {% for label in stage_labels %}
-      <span class="track-dot {% if loop.index0 < meta.stage_index %}is-done{% elif loop.index0 == meta.stage_index %}is-current{% else %}is-pending{% endif %}" title="{{ label }}"></span>
-      {% if not loop.last %}<span class="track-line {% if loop.index0 < meta.stage_index %}is-done{% else %}is-pending{% endif %}"></span>{% endif %}
+  {% if needs_you_companies %}
+  <section class="home-section" aria-labelledby="section-needs-you">
+    <h2 id="section-needs-you" class="section-heading section-heading--needs-you">Needs you<span class="section-count">{{ needs_you_companies|length }}</span></h2>
+    <p class="section-subtitle">A quick action from you keeps these moving.</p>
+    <div class="company-list">
+      {% for c in needs_you_companies %}
+      {{ company_card(c, card_meta, execution_plans, research_info, stage_labels, threshold, checked_id, check_message, check_result, response_tracking_enabled, duplicate_id, attach_preview, attach_preview_error) }}
       {% endfor %}
     </div>
-    <div class="track-labels" aria-hidden="true">
-      {% for label in stage_labels %}
-      <span class="{% if loop.index0 < meta.stage_index %}is-done{% elif loop.index0 == meta.stage_index %}is-current{% else %}is-pending{% endif %}">{{ label }}</span>
+  </section>
+  {% endif %}
+
+  {% if working_companies %}
+  <section class="home-section" aria-labelledby="section-working">
+    <h2 id="section-working" class="section-heading section-heading--working">Working<span class="section-count">{{ working_companies|length }}</span></h2>
+    <p class="section-subtitle">Baker's Dozen is handling these - no action needed from you right now.</p>
+    <div class="company-list">
+      {% for c in working_companies %}
+      {{ company_card(c, card_meta, execution_plans, research_info, stage_labels, threshold, checked_id, check_message, check_result, response_tracking_enabled, duplicate_id, attach_preview, attach_preview_error) }}
       {% endfor %}
     </div>
-    {% endif %}
+  </section>
+  {% endif %}
 
-    <div class="card-main">
-      {% if c.status == "pending" %}
-      <div class="match-block">
-        <p class="match-label">{{ meta.confidence_label }}<span class="match-why" title="{{ meta.confidence_explainer }}">?</span></p>
-        <p class="match-reason">{{ meta.relationship_label }}</p>
-        <p class="match-ask">Is this a company you recognize?</p>
-        <div class="action-row">
-          <form method="post" action="/api/companies/{{ c.id }}/confirm" data-loading-text="Confirming…">
-            <button type="submit" class="btn btn-primary btn-small">Yes, keep it</button>
-          </form>
-          <form method="post" action="/api/companies/{{ c.id }}/reject" data-loading-text="Removing…">
-            <button type="submit" class="btn btn-ghost btn-small">Not mine</button>
-          </form>
-        </div>
-      </div>
-
-      {% elif c.status == "rejected" %}
-      <div class="match-block">
-        <p class="state-line">You marked this "not mine."</p>
-        <form method="post" action="/api/companies/{{ c.id }}/confirm" data-loading-text="Confirming…">
-          <button type="submit" class="btn btn-ghost btn-small">Actually, keep it</button>
-        </form>
-      </div>
-
-      {% else %}
-      <section class="current-state deletion-{{ c.deletion_status|lower }}" aria-label="Current status">
-        {% if c.deletion_status == "NOT_STARTED" %}
-          <p class="state-line">🔍 Deletion method not found yet.</p>
-          <form method="post" action="/api/companies/{{ c.id }}/deletion/research" id="research-form-{{ c.id }}" data-company-id="{{ c.id }}" data-loading-text="Searching…">
-            <button type="submit" class="btn btn-primary btn-small">Find deletion method</button>
-          </form>
-
-        {% elif c.deletion_status == "METHOD_LOOKUP" %}
-          <p class="state-line"><span class="spinner" aria-hidden="true"></span> Searching…</p>
-          {# No form here on purpose - a fresh attempt is already running for
-             this company (see deletion_resolver.py's per-domain in-flight
-             guard). A live-but-inert placeholder, rather than nothing, so a
-             button that visually disappears between page loads never reads
-             as "the button did nothing" - it's disabled and explicitly
-             labeled instead of just absent. #}
-          <button type="button" class="btn btn-primary btn-small" disabled
-            title="A search for this company's deletion method is already running.">Searching…</button>
-
-        {% elif c.deletion_status == "UNKNOWN" %}
-          {% set info = research_info.get(c.id) %}
-          <p class="state-line">🔁 Retry scheduled{% if info and info.attempts %} <span class="state-meta">· tried {{ info.attempts }} of {{ threshold }} times</span>{% endif %}</p>
-          <form method="post" action="/api/companies/{{ c.id }}/deletion/research" id="research-form-{{ c.id }}" data-company-id="{{ c.id }}" data-loading-text="Searching…">
-            <button type="submit" class="btn btn-primary btn-small">Search again</button>
-          </form>
-
-        {% elif c.deletion_status == "NO_METHOD_FOUND" %}
-          {% set info = research_info.get(c.id) %}
-          <p class="state-line state-warning">⚠️ Couldn't find a deletion method{% if info and info.attempts %} <span class="state-meta">· tried {{ info.attempts }} times</span>{% endif %}</p>
-          <form method="post" action="/api/companies/{{ c.id }}/deletion/research" id="research-form-{{ c.id }}" data-company-id="{{ c.id }}" data-loading-text="Searching…">
-            <button type="submit" class="btn btn-primary btn-small">Search again</button>
-          </form>
-
-        {% elif c.deletion_status == "READY" %}
-          {% set plan = execution_plans.get(c.id) %}
-          {% set jte_active = plan and plan.selected_recipe == "JUST_THE_ESSENTIALS" %}
-          {% if jte_active %}
-          <p class="state-line state-success">🍪 Just the Essentials selected <span class="state-meta">· {{ plan.jte_progress_summary or "review cleanup actions" }}</span></p>
-          {% else %}
-          <p class="state-line state-success">✅ Deletion method ready <span class="state-meta">· {{ c.deletion_method|lower|replace('_', ' ') }}</span></p>
-          {% endif %}
-          <button type="button" class="btn btn-primary btn-delete delete-my-data-btn"
-            data-id="{{ c.id }}"
-            data-name="{{ c.name|e }}"
-            data-method="{{ c.deletion_method }}"
-            data-capability="{{ plan.capability if plan else 'MANUAL_HANDOFF' }}"
-            data-capability-reason="{{ (plan.reason if plan else '')|e }}"
-            data-action="{{ (plan.action_text if plan else '')|e }}"
-            data-details="{{ (c.deletion_instructions or '')|e }}"
-            data-consequences="{{ ((plan.consequences if plan else None) or '')|e }}"
-            data-selected-recipe="{{ (plan.selected_recipe if plan else '')|e }}"
-            data-recipe-summary="{{ (plan.recipe_summary if plan else '')|e }}"
-            data-recipe-explanation="{{ (plan.recipe_explanation if plan else '')|e }}"
-            data-recipe-tracking="{{ (plan.recipe_tracking_note if plan else '')|e }}"
-            data-jte-explanation="{{ (plan.jte_explanation if plan else '')|e }}"
-            data-leave-it-be-explanation="{{ (plan.leave_it_be_explanation if plan else '')|e }}"
-          >{{ "Review cleanup" if jte_active else "Delete my data" }}</button>
-
-        {% elif c.deletion_status == "USER_ACTION_REQUIRED" %}
-          <p class="state-line state-warning">🔑 Needs a visit to {{ c.name }}'s own site.</p>
-          {% if c.deletion_url %}
-          <a href="{{ c.deletion_url }}" target="_blank" rel="noopener" class="btn btn-primary btn-small">Continue on {{ c.name }} ↗</a>
-          {% endif %}
-
-        {% elif c.deletion_status == "SUBMITTED" %}
-          {% if c.deletion_evidence and c.deletion_evidence.type == "user_reported" %}
-          <p class="state-line state-success">📨 You marked this submitted{% if c.deletion_requested_at %} <span class="state-meta">· {{ c.deletion_requested_at.strftime('%b %d') }}</span>{% endif %}</p>
-          {% else %}
-          <p class="state-line state-success">📨 Request sent{% if c.deletion_requested_at %} <span class="state-meta">· {{ c.deletion_requested_at.strftime('%b %d') }}</span>{% endif %} · waiting on a reply</p>
-          {% endif %}
-
-        {% elif c.deletion_status == "IN_PROGRESS" %}
-          <p class="state-line">⏳ Request received - no action needed, waiting on {{ c.name }}.</p>
-
-        {% elif c.deletion_status == "VERIFICATION_NEEDED" %}
-          <p class="state-line state-warning">🔒 {{ c.name }} needs you to verify your identity or email.</p>
-          <p class="state-meta">Open Gmail and reply to {{ c.name }} yourself - Baker's Dozen never sends verification info for you.</p>
-
-        {% elif c.deletion_status == "MORE_INFO_REQUIRED" %}
-          <p class="state-line state-warning">📝 {{ c.name }} needs more information from you.</p>
-          <p class="state-meta">Review their reply in Gmail and respond yourself.</p>
-
-        {% elif c.deletion_status == "UNKNOWN_RESPONSE" %}
-          <p class="state-line">❓ {{ c.name }} replied, but we couldn't tell what it means yet.</p>
-
-        {% elif c.deletion_status == "ACCOUNT_CLOSED_DATA_UNVERIFIED" %}
-          <p class="state-line state-warning">{{ c.name }} closed the account, but didn't confirm your data was deleted.</p>
-          <p class="state-meta">Baker's Dozen is following up to ask whether your personal data was deleted.</p>
-
-        {% elif c.deletion_status == "ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED" %}
-          <p class="state-line state-warning">Account data deleted — full data deletion unconfirmed.</p>
-          <p class="state-meta">{{ c.name }} confirmed the account/account details were deleted, but hasn't yet confirmed all your personal information was deleted. Baker's Dozen is following up to ask.</p>
-
-        {% elif c.deletion_status == "COMPLETED" %}
-          <p class="state-line state-success state-celebrate">✅ Done{% if c.deletion_completed_at %} <span class="state-meta">· {{ c.deletion_completed_at.strftime('%b %d, %Y') }}</span>{% endif %}{% if not (c.deletion_evidence and c.deletion_evidence.type == "user_reported") %} <span class="state-meta">· confirmed by {{ c.name }}</span>{% endif %}</p>
-
-        {% elif c.deletion_status == "REJECTED" %}
-          <p class="state-line state-danger">🚫 {{ c.name }} declined this request.</p>
-
-        {% elif c.deletion_status == "FAILED" %}
-          {% set plan = execution_plans.get(c.id) %}
-          {% set jte_active = plan and plan.selected_recipe == "JUST_THE_ESSENTIALS" %}
-          {% if jte_active %}
-          <p class="state-line state-success">🍪 Just the Essentials selected <span class="state-meta">· {{ plan.jte_progress_summary or "review cleanup actions" }}</span></p>
-          {% else %}
-          <p class="state-line state-danger">⚠️ Couldn't send{% if c.deletion_error %} <span class="state-meta">· {{ c.deletion_error }}</span>{% endif %}</p>
-          {% endif %}
-          <button type="button" class="btn btn-primary btn-small delete-my-data-btn"
-            data-id="{{ c.id }}" data-name="{{ c.name|e }}" data-method="{{ c.deletion_method }}"
-            data-capability="{{ plan.capability if plan else 'MANUAL_HANDOFF' }}"
-            data-capability-reason="{{ (plan.reason if plan else '')|e }}"
-            data-action="Baker's Dozen will try sending this request again."
-            data-details="{{ (c.deletion_instructions or '')|e }}"
-            data-consequences="{{ ((plan.consequences if plan else None) or '')|e }}"
-            data-selected-recipe="{{ (plan.selected_recipe if plan else '')|e }}"
-            data-recipe-summary="{{ (plan.recipe_summary if plan else '')|e }}"
-            data-recipe-explanation="{{ (plan.recipe_explanation if plan else '')|e }}"
-            data-recipe-tracking="{{ (plan.recipe_tracking_note if plan else '')|e }}"
-            data-jte-explanation="{{ (plan.jte_explanation if plan else '')|e }}"
-            data-leave-it-be-explanation="{{ (plan.leave_it_be_explanation if plan else '')|e }}"
-          >{{ "Review cleanup" if jte_active else "Send again" }}</button>
-        {% endif %}
-
-        {% if c.waiting_on == "COMPANY" and c.deletion_thread_id %}
-        <div class="chase-state">
-          <p class="chase-state-title">📬 WAITING ON {{ c.name|upper }}</p>
-          <p class="chase-state-detail">Request received. Baker's Dozen is following up automatically until this is resolved.</p>
-          <p class="chase-state-meta">
-            {% if c.followups_paused %}Follow-ups paused.{% elif c.next_followup_at %}Next follow-up: {{ c.next_followup_at|relative_time(future=True) }}{% endif %}
-            {% if c.deletion_response_checked_at %} · Last checked: {{ c.deletion_response_checked_at|relative_time }}{% endif %}
-          </p>
-          <form method="post" action="/api/companies/{{ c.id }}/deletion/{{ 'resume-followups' if c.followups_paused else 'pause-followups' }}" data-loading-text="{{ 'Resuming…' if c.followups_paused else 'Pausing…' }}">
-            <button type="submit" class="btn btn-secondary btn-small">{{ 'Resume follow-ups' if c.followups_paused else 'Pause follow-ups' }}</button>
-          </form>
-        </div>
-        {% elif c.waiting_on == "ESCALATION_NEEDED" %}
-        <div class="chase-state chase-state-escalation">
-          <p class="chase-state-title">⚠️ NEEDS YOUR ATTENTION</p>
-          <p class="chase-state-detail">{{ c.name }} responded in a way that needs a human decision - automatic follow-ups have stopped.</p>
-        </div>
-        {% endif %}
-
-        {% if checked_id and checked_id|int == c.id and check_message %}
-        <p class="check-response-result" role="status" data-check-result="{{ check_result }}">{{ check_message }}</p>
-        {% endif %}
-
-        {% if response_tracking_enabled and c.deletion_thread_id and c.deletion_status in
-              ("SUBMITTED", "IN_PROGRESS", "VERIFICATION_NEEDED", "MORE_INFO_REQUIRED", "UNKNOWN_RESPONSE", "ACCOUNT_CLOSED_DATA_UNVERIFIED", "ACCOUNT_RECORD_DELETED_DATA_UNVERIFIED") %}
-        <form method="post" action="/api/companies/{{ c.id }}/deletion/check-response" data-loading-text="Checking…" class="check-response-form" data-company-id="{{ c.id }}" data-company-name="{{ c.name|e }}">
-          <button type="submit" class="btn btn-primary btn-small">Check for reply</button>
-        </form>
-        {% endif %}
-
-        {% if duplicate_id and duplicate_id|int == c.id %}
-        <div class="duplicate-warning">
-          <p>⚠️ Already marked <strong>{{ c.deletion_status|lower }}</strong>. Send it again?</p>
-          <form method="post" action="/api/companies/{{ c.id }}/deletion/execute" data-loading-text="Sending…">
-            <input type="hidden" name="force" value="true">
-            <button type="submit" class="btn btn-danger btn-small">Yes, send again</button>
-          </form>
-        </div>
-        {% endif %}
-      </section>
-      {% endif %}
-
-      <details class="card-details">
-        <summary>Details</summary>
-
-        {% if c.status == "confirmed" %}
-        {% if c.deletion_evidence and c.deletion_evidence.type == "gmail_reply" and c.deletion_evidence.quote %}
-        <p class="state-detail state-quote">"{{ c.deletion_evidence.quote }}"</p>
-        {% endif %}
-
-        {% if c.deletion_status in ("UNKNOWN", "NO_METHOD_FOUND") %}
-        {% set info = research_info.get(c.id) %}
-        {% if info %}
-        <p class="state-detail">
-          {%- if info.last_attempted_at %}Last tried {{ info.last_attempted_at.strftime('%b %d, %Y') }}.{% endif -%}
-          {%- if info.next_retry_at %} Next automatic retry ~{{ info.next_retry_at.strftime('%b %d, %Y') }}.{% endif -%}
-          {%- if info.failure_reason_label %} {{ info.failure_reason_label }}.{% endif -%}
-        </p>
-        {% if info.blocked_url %}
-        <p class="state-detail">We couldn't confirm this ourselves - you can check it yourself:
-          <a href="{{ info.blocked_url }}" target="_blank" rel="noopener">{{ info.blocked_url }}</a></p>
-        {% endif %}
-        {% endif %}
-        {% endif %}
-
-        {% if c.deletion_status in ("USER_ACTION_REQUIRED", "VERIFICATION_NEEDED") %}
-        <details class="secondary-action">
-          <summary>Mark as completed</summary>
-          <form method="post" action="/api/companies/{{ c.id }}/deletion/mark-completed" class="mark-completed-form" data-loading-text="Saving…">
-            <input type="text" name="evidence_note" placeholder="Optional: confirmation # or note">
-            <button type="submit" class="btn btn-ghost btn-small"
-              onclick="return confirm('Only mark this completed if the request was actually finished on {{ c.name|e }}’s site.');">
-              Mark as completed
-            </button>
-          </form>
-        </details>
-        {% endif %}
-
-        {% set attach_eligible = response_tracking_enabled and c.deletion_status not in ("COMPLETED", "REJECTED", "FAILED") %}
-        {% set attach_pending_for_this_company = (attach_preview and attach_preview.company_id == c.id) or (attach_preview_error and attach_preview_error.company_id == c.id) %}
-        {% if attach_eligible or attach_pending_for_this_company %}
-        <div class="attach-thread-block">
-          {% if attach_preview and attach_preview.company_id == c.id %}
-          <p class="state-detail">Is this {{ c.name }}'s confirmation email?</p>
-          <p class="attach-preview-line"><strong>From:</strong> {{ attach_preview['from']|e }}</p>
-          <p class="attach-preview-line"><strong>Subject:</strong> {{ attach_preview.subject|e }}</p>
-          <p class="attach-preview-line"><strong>Date:</strong> {{ attach_preview.date|e }}</p>
-          <form method="post" action="/api/companies/{{ c.id }}/deletion/attach-thread/confirm" style="display:inline" data-loading-text="Adding…">
-            <input type="hidden" name="message_id" value="{{ attach_preview.message_id }}">
-            <button type="submit" class="btn btn-ghost btn-small">Yes, add this email</button>
-          </form>
-          <a href="/dashboard" class="btn btn-ghost btn-small">Cancel</a>
-
-          {% else %}
-          {% if attach_preview_error and attach_preview_error.company_id == c.id %}
-          <p class="state-detail attach-error">⚠️ {{ attach_preview_error.message }}</p>
-          {% endif %}
-          {% if attach_eligible %}
-          <details class="secondary-action">
-            {% if c.deletion_thread_id %}
-            <summary>Seeing a reply in Gmail that isn't showing here?</summary>
-            <p class="state-detail">Paste the Gmail link or message ID for {{ c.name }}'s actual reply and Cookie Monster will start tracking that conversation instead. We'll show you just the sender/subject/date before changing anything - never the message body.</p>
-            {% else %}
-            <summary>Submitted this yourself? Add the confirmation email</summary>
-            <p class="state-detail">Paste the Gmail link or message ID for {{ c.name }}'s confirmation email. We'll show you just the sender/subject/date before adding anything - never the message body.</p>
-            {% endif %}
-            <form method="post" action="/api/companies/{{ c.id }}/deletion/attach-thread/preview" data-loading-text="Looking up…">
-              <input type="text" name="gmail_ref" placeholder="Gmail link or message ID" required>
-              <button type="submit" class="btn btn-ghost btn-small">{{ "Use this email instead" if c.deletion_thread_id else "Add confirmation email" }}</button>
-            </form>
-          </details>
-          {% endif %}
-          {% endif %}
-        </div>
-        {% endif %}
-
-        <details class="secondary-action">
-          <summary>Not a match?</summary>
-          <div class="action-row">
-            <form method="post" action="/api/companies/{{ c.id }}/reject" data-loading-text="Removing…">
-              <button type="submit" class="btn btn-ghost btn-small">Not my company</button>
-            </form>
-            <form method="post" action="/api/companies/{{ c.id }}/reset" data-loading-text="Undoing…">
-              <button type="submit" class="btn btn-ghost btn-small">Review again</button>
-            </form>
-          </div>
-        </details>
-        {% endif %}
-
-        <p class="evidence-line">{{ c.evidence_count }} piece{{ 's' if c.evidence_count != 1 else '' }} of evidence ({{ c.evidence_types | join(', ') }})</p>
-        <p class="dates">First seen {{ c.first_seen.strftime('%Y-%m-%d') }} · Last seen {{ c.last_seen.strftime('%Y-%m-%d') }}</p>
-        {% if c.example_subjects %}
-        <p><strong>Example subject lines:</strong></p>
-        <ul>{% for s in c.example_subjects %}<li>{{ s }}</li>{% endfor %}</ul>
-        {% endif %}
-        {% if c.detection_reasons %}
-        <p><strong>Detected because:</strong></p>
-        <ul>{% for r in c.detection_reasons %}<li>{{ r }}</li>{% endfor %}</ul>
-        {% endif %}
-
-        <details class="secondary-action">
-          <summary>Correct company info</summary>
-          <form method="post" action="/api/companies/{{ c.id }}/correct" class="correct-form" data-loading-text="Saving…">
-            <label>Company name
-              <input type="text" name="name" value="{{ c.name }}">
-            </label>
-            <label>Relationship type
-              <select name="relationship_type">
-                {% for opt in ["transactional", "account", "subscription", "marketing", "mixed"] %}
-                <option value="{{ opt }}" {% if c.relationship_type == opt %}selected{% endif %}>{{ opt }}</option>
-                {% endfor %}
-              </select>
-            </label>
-            <button type="submit" class="btn btn-ghost btn-small">Save correction</button>
-          </form>
-          <label class="merge-checkbox">
-            <input type="checkbox" class="merge-pick" value="{{ c.id }}"> select for merge
-          </label>
-        </details>
-      </details>
+  {% if done_companies %}
+  <section class="home-section" aria-labelledby="section-done">
+    <h2 id="section-done" class="section-heading section-heading--done">Done<span class="section-count">{{ done_companies|length }}</span></h2>
+    <p class="section-subtitle">Cleanup finished for these companies.</p>
+    <div class="company-list">
+      {% for c in done_companies %}
+      {{ company_card(c, card_meta, execution_plans, research_info, stage_labels, threshold, checked_id, check_message, check_result, response_tracking_enabled, duplicate_id, attach_preview, attach_preview_error) }}
+      {% endfor %}
     </div>
-  </article>
-{% endfor %}
+  </section>
+  {% endif %}
+
 </div>
 
 <div id="deletion-modal" class="deletion-modal" hidden>
@@ -433,7 +495,7 @@
         <p><strong>Known consequences:</strong> <span id="deletion-modal-consequences-text"></span></p>
       </div>
       <div id="deletion-modal-user-step" class="deletion-modal-user-step" hidden>
-        <p>🔑 <strong>A step from you is still required:</strong> <span id="deletion-modal-user-step-reason"></span></p>
+        <p><strong>A step from you is still required:</strong> <span id="deletion-modal-user-step-reason"></span></p>
       </div>
       <div id="deletion-modal-email" class="deletion-email-preview" hidden>
         <p><strong>To:</strong> <span id="deletion-modal-email-to"></span></p>
@@ -478,13 +540,14 @@
    RecipeChoice.LEAVE_IT_BE (see app.privacy_case.pantry_company_ids) -
    PURELY DERIVED, never a second stored state. Visually secondary and
    collapsed by default, on purpose - this is deliberately not active
-   work. A pantry card never shows the deletion-status UI the active
-   cards do (no research/execute buttons, no progress track) - just
-   identity, the Leave It Be disposition, and one way back to the
-   Cleanup Recipe picker. #}
+   work, and never looks like a failure or unfinished cleanup. A pantry
+   card never shows the deletion-status UI the active cards do (no
+   research/execute buttons, no progress track) - just identity, the
+   Leave It Be disposition, and one way back to the Cleanup Recipe
+   picker. #}
 <details class="card pantry-section">
   <summary>The Pantry<span class="pantry-count">({{ pantry_companies|length }})</span></summary>
-  <p class="pantry-intro">Companies you've chosen to leave as they are.</p>
+  <p class="pantry-intro">Companies you've chosen to leave alone.</p>
   {% if not pantry_companies %}
   <p class="pantry-empty">Nothing here yet.</p>
   {% else %}
@@ -512,6 +575,17 @@
   {% endfor %}
   </div>
   {% endif %}
+</details>
+
+{# Reserved layout for future areas this slice does not build yet - kept
+   as a placeholder note only, never a fake/dead button. #}
+<p class="home-future-note">The Cookie Jar, Mailbox, and more are on their way.</p>
+
+<details class="advanced-section">
+  <summary>Advanced</summary>
+  <form method="post" action="/api/delete-all" onsubmit="return confirm('Delete ALL discovered company data from the local database? This cannot be undone. (Your Gmail connection is not affected.)');">
+    <button type="submit" class="btn btn-danger btn-small">Delete all imported data</button>
+  </form>
 </details>
 
 <script src="/static/dashboard.js"></script>

@@ -230,9 +230,38 @@ a:hover {
   box-shadow: var(--shadow-md);
 }
 
+/* Plain CSS-drawn envelope - no emoji glyph. A rounded rectangle plus two
+   diagonal "flap" lines, in the same restrained ink/primary tones as the
+   rest of the icon-free UI. */
 .mail-nav-icon {
-  font-size: 18px;
-  line-height: 1;
+  position: relative;
+  display: block;
+  width: 18px;
+  height: 13px;
+  border: 2px solid var(--ink);
+  border-radius: 2px;
+  background: var(--surface);
+}
+
+.mail-nav-icon::before,
+.mail-nav-icon::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  width: 9px;
+  height: 2px;
+  background: var(--ink);
+  transform-origin: top left;
+}
+
+.mail-nav-icon::before {
+  left: 1px;
+  transform: rotate(38deg);
+}
+
+.mail-nav-icon::after {
+  right: 1px;
+  transform: rotate(-38deg) translateX(-2px);
 }
 
 .mail-nav-badge {
@@ -406,6 +435,162 @@ a:hover {
 .scan-summary::after { content: " ✦"; color: var(--sky-deep); }
 
 /* =========================
+   HOME HEADER - the calm, consumer-facing status line + compact Needs
+   You/Working/Done counts (see main.py's _home_status_line and
+   app/top_level_state.py). Deliberately not a marketing hero: this is an
+   authenticated working app, so the tone stays quiet and factual rather
+   than a big headline.
+   ========================= */
+
+.home-header {
+  text-align: center;
+  margin-bottom: var(--sp-4);
+}
+
+.home-status-line {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(16px, 3vw, 19px);
+  font-weight: 800;
+}
+
+.home-summary {
+  display: flex;
+  justify-content: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.home-summary-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+
+  min-width: 84px;
+  padding: var(--sp-2) var(--sp-3);
+
+  background: var(--surface);
+  border: 2px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.home-summary-num {
+  font-size: 22px;
+  font-weight: 1000;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.home-summary-label {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* Each stat's accent tells the same story as its section heading below -
+   never color alone, the label text is always present too. */
+.home-summary-stat--needs-you { border-color: var(--orange); }
+.home-summary-stat--needs-you .home-summary-num { color: var(--orange-deep); }
+.home-summary-stat--working { border-color: var(--sky); }
+.home-summary-stat--working .home-summary-num { color: var(--sky-deep); }
+.home-summary-stat--done { border-color: var(--sage); }
+.home-summary-stat--done .home-summary-num { color: var(--sage-deep); }
+
+@media (max-width: 500px) {
+  .home-summary-stat { min-width: 0; flex: 1 1 0; padding: var(--sp-2); }
+}
+
+/* =========================
+   HOME SECTIONS - Needs You / Working / Done, one shared heading
+   component with a distinct accent per section (see dashboard.html's
+   section-heading--* usage). Needs You is the one visually urgent
+   treatment (attention gold, never red/coral - that stays reserved for
+   destructive/error emphasis); Working stays calm/neutral; Done reads as
+   a genuine, quiet success, never a nag to do more.
+   ========================= */
+
+.home-section {
+  margin-bottom: var(--sp-6);
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+
+  margin: 0;
+  padding-left: var(--sp-3);
+  border-left: 5px solid var(--border);
+
+  font-size: 18px;
+  font-weight: 900;
+  color: var(--ink);
+}
+
+.section-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+
+  background: var(--surface-alt);
+  color: var(--muted);
+  border-radius: 999px;
+
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.section-heading--needs-you { border-left-color: var(--orange); }
+.section-heading--needs-you .section-count { background: var(--orange-tint); color: var(--orange-deep); }
+
+.section-heading--working { border-left-color: var(--sky); }
+.section-heading--working .section-count { background: var(--sky-tint); color: var(--sky-deep); }
+
+.section-heading--done { border-left-color: var(--sage); }
+.section-heading--done .section-count { background: var(--sage-tint); color: var(--sage-deep); }
+
+.section-heading--neutral { border-left-color: var(--lavender); }
+.section-heading--neutral .section-count { background: var(--lavender-tint); color: var(--lavender-deep); }
+
+.section-subtitle {
+  margin: 4px 0 var(--sp-4) var(--sp-3);
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.home-future-note {
+  margin: var(--sp-2) 0 var(--sp-4);
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.advanced-section {
+  margin-top: var(--sp-6);
+  text-align: center;
+}
+
+.advanced-section summary {
+  display: inline-block;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.advanced-section form {
+  margin-top: var(--sp-3);
+}
+
+/* =========================
    "YOU'VE GOT MAIL" BANNER - a delightful but non-obstructive arrival
    moment (never a blocking modal), restrained and only ever real: it only
    ever appears when unread_mail_count > 0, computed from real MailMessage
@@ -426,10 +611,37 @@ a:hover {
   margin-bottom: var(--sp-4);
 }
 
+/* Same CSS-drawn envelope as .mail-nav-icon, scaled up - no emoji glyph. */
 .mail-banner-icon {
+  position: relative;
   flex: none;
-  font-size: 32px;
-  line-height: 1;
+  display: block;
+  width: 30px;
+  height: 22px;
+  border: 3px solid var(--primary-deep);
+  border-radius: 4px;
+  background: var(--surface);
+}
+
+.mail-banner-icon::before,
+.mail-banner-icon::after {
+  content: "";
+  position: absolute;
+  top: -2px;
+  width: 15px;
+  height: 3px;
+  background: var(--primary-deep);
+  transform-origin: top left;
+}
+
+.mail-banner-icon::before {
+  left: 2px;
+  transform: rotate(38deg);
+}
+
+.mail-banner-icon::after {
+  right: 2px;
+  transform: rotate(-38deg) translateX(-3px);
 }
 
 .mail-banner-text {
@@ -1177,11 +1389,14 @@ button:disabled:hover,
   box-shadow: 3px 3px 0 #6f2419, var(--shadow-sm);
 }
 
-.btn-delete {
-  color: white;
-  background: linear-gradient(135deg, var(--red), var(--red-deep));
-  box-shadow: 3px 3px 0 #6f2419, var(--shadow-sm);
-}
+/* Deliberately no distinct styling of its own - it always appears
+   alongside .btn-primary (the "Delete my data"/"Review cleanup"/"Send
+   again" CTA) and defers entirely to that blue-violet primary treatment.
+   Red/coral stays reserved for genuinely destructive or error actions
+   (.btn-danger - "Delete all imported data", a duplicate-send warning) -
+   the single most useful next action on a card should never read as an
+   error just because it's the important one. */
+.btn-delete {}
 
 /* =========================
    CONFIRMATION MODAL

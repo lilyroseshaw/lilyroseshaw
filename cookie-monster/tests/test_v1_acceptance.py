@@ -462,7 +462,7 @@ def test_7_rejection_is_needs_you_never_false_success(client_db, client):
     resp = client.get("/dashboard")
     soup = BeautifulSoup(resp.text, "html.parser")
     card = soup.find("article", {"data-id": str(company.id)})
-    assert "NEEDS YOUR ATTENTION" in card.get_text()
+    assert "Needs your attention" in card.get_text()
     assert "declined" in card.get_text()
     assert card.get("data-top-level-state") == TopLevelState.NEEDS_YOU
 

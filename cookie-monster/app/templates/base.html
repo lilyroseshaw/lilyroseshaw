@@ -9,7 +9,7 @@
 <body>
   <header class="topbar">
     <a class="mail-nav" href="/mail" aria-label="Mailbox{% if unread_mail_count|default(0) > 0 %}, {{ unread_mail_count }} unread{% endif %}">
-      <span class="mail-nav-icon" aria-hidden="true">✉️</span>
+      <span class="mail-nav-icon" aria-hidden="true"></span>
       {% if unread_mail_count|default(0) > 0 %}
       <span class="mail-nav-badge">{{ unread_mail_count }}</span>
       {% endif %}

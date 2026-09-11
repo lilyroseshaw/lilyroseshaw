@@ -248,15 +248,18 @@ def test_rejected_company_has_no_progress_stepper():
     assert card.find(class_="progress-track") is None
 
 
-def test_dashboard_progress_summary_uses_real_counts_only(client_db):
+def test_home_summary_uses_real_counts_only(client_db):
+    """Replaces the old developer-style 'found/ready to send/requests out'
+    progress widget with the home screen's own compact Needs You/Working/
+    Done summary (see app/top_level_state.py) - counts must reflect real
+    top-level state, not be invented."""
     _company(client_db, "Ready Co", "readyco.com", deletion_status=DeletionStatus.READY, deletion_verified=True)
     _company(client_db, "Done Co", "doneco.com", deletion_status=DeletionStatus.COMPLETED)
     soup = _get_dashboard_soup()
-    summary = soup.find(class_="progress-summary")
+    summary = soup.find(class_="home-summary")
     assert summary is not None
-    nums = [el.get_text() for el in summary.find_all(class_="stat-num")]
-    assert "2" in nums  # total found
-    assert "1" in nums  # ready + deleted, both 1 here
+    nums = [el.get_text() for el in summary.find_all(class_="home-summary-num")]
+    assert nums == ["0", "1", "1"]  # needs you, working (Ready Co), done (Done Co)
 
 
 def test_check_response_result_uses_status_role_for_screen_readers(client_db):

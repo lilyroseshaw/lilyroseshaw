@@ -68,6 +68,16 @@
       // section a reload lands on already reflects the change correctly.
       return false;
     }
+    if (oldCard.dataset.topLevelState !== newCard.dataset.topLevelState) {
+      // Same idea, one level finer: the home screen groups active
+      // companies into their own Needs You/Working/Done sections (see
+      // app/top_level_state.py) - an action that moves a company between
+      // those buckets (e.g. a reply completes the case) can't be
+      // relocated by an in-place swap either. Falls back to a full
+      // reload, exactly like the pantry-boundary case above, so the
+      // company always ends up rendered in its correct section.
+      return false;
+    }
     oldCard.replaceWith(newCard);
     wireCard(newCard);
     return true;

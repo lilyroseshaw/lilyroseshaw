@@ -357,11 +357,11 @@ def test_dashboard_renders_all_distinct_research_states(client_db):
     assert resp.status_code == 200
     text = resp.text
 
-    assert "Deletion method not found yet" in text
+    assert "haven't found a way to reach Not Started Co" in text
     assert "Searching…" in text
-    assert "Retry scheduled" in text
-    assert "Couldn't find a deletion method" in text
-    assert "Deletion method ready" in text
+    assert "try again soon" in text
+    assert "couldn't find a way to reach Failed Co" in text
+    assert "Ready to send" in text
 
 
 def test_dashboard_shows_attempt_count_and_retry_timing(client_db):

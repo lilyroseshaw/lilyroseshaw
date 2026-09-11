@@ -163,7 +163,7 @@ def test_cancel_never_submits_a_deletion_request(live_server, page):
     # And the company's actual status must be untouched - a request-level
     # check and a state-level check, so neither can silently mask a bug.
     page.goto(f"{base_url}/dashboard")
-    assert "Deletion method ready" in page.content()
+    assert "Ready to send" in page.content()
     assert page.locator("#deletion-modal").is_hidden()
 
 
@@ -528,7 +528,7 @@ def test_pantry_change_recipe_to_just_the_essentials_shows_jte_workflow_not_dele
     card_text = active_card.inner_text()
     assert "Delete my data" not in card_text
     assert "Deletion method ready" not in card_text
-    assert "Just the Essentials selected" in card_text
+    assert "Just the Essentials" in card_text
 
     button = active_card.locator(".delete-my-data-btn")
     assert button.inner_text().strip() == "Review cleanup"

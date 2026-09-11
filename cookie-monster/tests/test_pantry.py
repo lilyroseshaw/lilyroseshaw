@@ -427,7 +427,7 @@ def test_pantry_to_just_the_essentials_card_shows_jte_next_action_not_delete_my_
     card_text = card.get_text()
     assert "Delete my data" not in card_text
     assert "Deletion method ready" not in card_text
-    assert "Just the Essentials selected" in card_text
+    assert "Just the Essentials" in card_text
 
     button = card.find(class_="delete-my-data-btn")
     assert button is not None
@@ -457,7 +457,7 @@ def test_pantry_to_just_the_essentials_failed_status_also_shows_jte_next_action(
     card_text = card.get_text()
     assert "Send again" not in card_text
     assert "Couldn't send" not in card_text
-    assert "Just the Essentials selected" in card_text
+    assert "Just the Essentials" in card_text
     button = card.find(class_="delete-my-data-btn")
     assert button.get_text(strip=True) == "Review cleanup"
 
